@@ -41,6 +41,7 @@ Server runs on http://localhost:8080
   "drift_score": 0.15
 }
 
+
 ## x402 Integration
 
 All paid endpoints return 402 Payment Required with x402 payment instructions.
