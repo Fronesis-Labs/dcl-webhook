@@ -1,0 +1,70 @@
+{
+  "mcp_version": "1.0.0",
+  "server_info": {
+    "name": "DCL Trust Oracle",
+    "version": "2.0.0",
+    "description": "Deterministic AI audit layer providing tamper-evident, privacy-first policy evaluation and post-action forensic decoding via x402 micropayments.",
+    "provider": "Fronesis Labs",
+    "base_url": "https://fronesislabs.com"
+  },
+  "tools": [
+    {
+      "name": "evaluate_fast",
+      "description": "FAST Pre-Action Audit ($0.01). For high-volume, low-risk LLM outputs (e.g., summarization). Returns a tamper-evident tx_hash. Does NOT store raw content.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "response": { "type": "string", "description": "The LLM output text to be evaluated." },
+          "policy": {
+            "type": "string",
+            "description": "Policy to apply. Built-in options: 'default', 'anti_jailbreak', 'safety', 'content_quality'. Or provide inline YAML.",
+            "default": "default"
+          },
+          "agent_id": { "type": "string", "description": "Identifier of the AI agent making the request." },
+          "task_type": { "type": "string", "description": "Type of task (e.g., 'summarization', 'classification')." }
+        },
+        "required": ["response", "agent_id"]
+      }
+    },
+    {
+      "name": "evaluate_strict",
+      "description": "STRICT Pre-Action Audit ($0.05). For high-stakes outputs requiring deeper analysis and higher confidence thresholds.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "response": { "type": "string", "description": "The LLM output text to be evaluated." },
+          "policy": {
+            "type": "string",
+            "description": "Policy to apply. Built-in options: 'default', 'anti_jailbreak', 'safety', 'content_quality'. Or provide inline YAML.",
+            "default": "safety"
+          },
+          "agent_id": { "type": "string", "description": "Identifier of the AI agent making the request." },
+          "task_type": { "type": "string", "description": "Type of task (e.g., 'critical_reasoning', 'sensitive_content')." }
+        },
+        "required": ["response", "agent_id"]
+      }
+    },
+    {
+      "name": "audit_decode",
+      "description": "POST-ACTION Basic Audit ($0.10). Verify a past decision by tx_hash. Returns metadata (verdict, confidence, agent_id, reason) without exposing original raw content.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tx_hash": { "type": "string", "description": "The transaction hash returned by a previous evaluate_fast or evaluate_strict call." }
+        },
+        "required": ["tx_hash"]
+      }
+    },
+    {
+      "name": "audit_decode_deep",
+      "description": "POST-ACTION Deep Forensic Audit ($0.50). For detailed investigations. Provides everything in basic audit PLUS extended drift context, tamper-evidence indices, and environmental metadata.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tx_hash": { "type": "string", "description": "The transaction hash to investigate deeply." }
+        },
+        "required": ["tx_hash"]
+      }
+    }
+  ]
+}
