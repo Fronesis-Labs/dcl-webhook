@@ -24,6 +24,23 @@ Server runs on http://localhost:8080
 | GET /audit/{tx_hash} | $0.10 | Basic post-action audit |
 | GET /audit/{tx_hash}/deep | $0.50 | Deep forensic audit with drift context |
 
+### Example Response
+
+```json
+{
+  "verdict": "COMMIT",
+  "confidence": 0.95,
+  "reason": "All policy checks passed",
+  "tx_hash": "0x7a8f3b2c...",
+  "chain_index": 42,
+  "input_hash": "0x9d4e1f...",
+  "policy_version": "1.0.0",
+  "timestamp": 1721635200.123,
+  "pipeline_id": "abc123",
+  "drift_mode": "NORMAL",
+  "drift_score": 0.15
+}
+
 ## x402 Integration
 
 All paid endpoints return 402 Payment Required with x402 payment instructions.
