@@ -1,10 +1,6 @@
 """
 DCL Webhook Server v2.0.0 — x402 Micropayments + Extended Metadata Audit
 Deterministic AI audit layer. Tamper-evident. Privacy-first.
-
-Deploy: Railway / Render / VPS
-pip install fastapi uvicorn pyyaml fastapi-x402
-python webhook_server.py
 """
 import hashlib
 import math
@@ -17,8 +13,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from fastapi_x402 import init_x402, pay
-
-# Импортируем ваш коллектор телеметрии (должен быть в той же папке)
 from telemetry import get_collector
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -37,7 +31,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Инициализация x402 шлюза
 init_x402(
     app,
     pay_to=os.environ.get("X402_WALLET", "0x0000000000000000000000000000000000000000"),
@@ -51,65 +44,131 @@ init_x402(
 def sha256hex(s: str) -> str:
     return hashlib.sha256(s.encode()).hexdigest()
 
+import sqlite3
+import json
+from typing import Tuple, Optional
+
 class ChainState:
-    """In-memory tamper-evident chain. Stores METADATA ONLY (Privacy-First)."""
+    """SQLite-backed tamper-evident chain. Stores METADATA ONLY (Privacy-First)."""
     GENESIS = "0" * 64
 
-    def __init__(self):
-        self._entries: list[dict] = []
+    def __init__(self, db_path: str = "dcl_chain.db"):
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS chain (
+                index INTEGER PRIMARY KEY,
+                tx_hash TEXT UNIQUE NOT NULL,
+                prev_hash TEXT NOT NULL,
+                verdict TEXT NOT NULL,
+                input_hash TEXT NOT NULL,
+                policy_hash TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                task_type TEXT NOT NULL,
+                timestamp REAL NOT NULL,
+                drift_context TEXT NOT NULL
+            )
+        """)
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_hash ON chain(tx_hash)")
+        self._conn.commit()
 
     def append(self, verdict: str, input_hash: str, policy_hash: str, 
                agent_id: str, reason: str, confidence: float, task_type: str) -> Tuple[str, int]:
-        prev_hash = self._entries[-1]["tx_hash"] if self._entries else self.GENESIS
-        idx = len(self._entries)
+        # Достаём prev_hash из базы — критично для рестарта
+        last = self._conn.execute("SELECT tx_hash FROM chain ORDER BY index DESC LIMIT 1").fetchone()
+        prev_hash = last[0] if last else self.GENESIS
         
-        # Хэшируем только метаданные, сырой текст НЕ попадает в цепочку
+        idx = self._conn.execute("SELECT COALESCE(MAX(index), -1) + 1 FROM chain").fetchone()[0]
+        
         content = f"{idx}:{verdict}:{input_hash}:{policy_hash}:{prev_hash}:{time.time()}"
         tx_hash = "0x" + sha256hex(content)[:32]
         
-        self._entries.append({
-            "index": idx,
-            "tx_hash": tx_hash,
-            "prev_hash": prev_hash,
-            "verdict": verdict,
-            "input_hash": input_hash,
-            "policy_hash": policy_hash,
-            "agent_id": agent_id,
-            "reason": reason,
-            "confidence": confidence,
-            "task_type": task_type,
-            "timestamp": time.time(),
-            # Расширенный контекст для Deep-аудита ($0.50)
-            "drift_context": {
-                "environment": "production-edge",
-                "policy_version_hash": policy_hash
-            }
-        })
+        drift_context = {
+            "environment": "production-edge",
+            "policy_version_hash": policy_hash
+        }
+        
+        self._conn.execute("""
+            INSERT INTO chain (index, tx_hash, prev_hash, verdict, input_hash, policy_hash, 
+                             agent_id, reason, confidence, task_type, timestamp, drift_context)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (idx, tx_hash, prev_hash, verdict, input_hash, policy_hash, 
+              agent_id, reason, confidence, task_type, time.time(), json.dumps(drift_context)))
+        self._conn.commit()
+        
         return tx_hash, idx
 
     def get_by_tx(self, tx_hash: str) -> Optional[dict]:
-        return next((e for e in self._entries if e["tx_hash"] == tx_hash), None)
+        row = self._conn.execute("""
+            SELECT index, tx_hash, prev_hash, verdict, input_hash, policy_hash, 
+                   agent_id, reason, confidence, task_type, timestamp, drift_context
+            FROM chain WHERE tx_hash = ?
+        """, (tx_hash,)).fetchone()
+        
+        if not row:
+            return None
+        
+        return {
+            "index": row[0],
+            "tx_hash": row[1],
+            "prev_hash": row[2],
+            "verdict": row[3],
+            "input_hash": row[4],
+            "policy_hash": row[5],
+            "agent_id": row[6],
+            "reason": row[7],
+            "confidence": row[8],
+            "task_type": row[9],
+            "timestamp": row[10],
+            "drift_context": json.loads(row[11])
+        }
 
     def verify(self) -> Tuple[bool, Optional[int]]:
-        for i, entry in enumerate(self._entries):
-            expected_prev = self._entries[i-1]["tx_hash"] if i > 0 else self.GENESIS
-            if entry["prev_hash"] != expected_prev:
-                return False, i
+        rows = self._conn.execute("""
+            SELECT index, prev_hash, tx_hash FROM chain ORDER BY index
+        """).fetchall()
+        
+        for i, row in enumerate(rows):
+            expected_prev = rows[i-1][2] if i > 0 else self.GENESIS
+            if row[1] != expected_prev:
+                return False, row[0]
         return True, None
 
     def export(self) -> list[dict]:
-        return list(self._entries)
+        rows = self._conn.execute("""
+            SELECT index, tx_hash, prev_hash, verdict, input_hash, policy_hash, 
+                   agent_id, reason, confidence, task_type, timestamp, drift_context
+            FROM chain ORDER BY index
+        """).fetchall()
+        
+        return [{
+            "index": r[0],
+            "tx_hash": r[1],
+            "prev_hash": r[2],
+            "verdict": r[3],
+            "input_hash": r[4],
+            "policy_hash": r[5],
+            "agent_id": r[6],
+            "reason": r[7],
+            "confidence": r[8],
+            "task_type": r[9],
+            "timestamp": r[10],
+            "drift_context": json.loads(r[11])
+        } for r in rows]
 
     def __len__(self):
-        return len(self._entries)
+        return self._conn.execute("SELECT COUNT(*) FROM chain").fetchone()[0]
 
 _chain = ChainState()
 _commit_rate: list[float] = []
 
 # ════════════════════════════════════════════════════════════════════════════════
-# Policy Engine (из вашего исходного webhook_server.py)
+# Policy Engine
 # ════════════════════════════════════════════════════════════════════════════════
-DEFAULT_POLICY = """
+BUILTIN_POLICIES = {
+    "default": """
 version: "1.0.0"
 name: "DCL Default Policy"
 thresholds:
@@ -119,10 +178,7 @@ forbidden_patterns:
   - "jailbreak"
   - "bypass safety"
 required_patterns: []
-"""
-
-BUILTIN_POLICIES = {
-    "default": DEFAULT_POLICY,
+""",
     "anti_jailbreak": """
 version: "1.0.0"
 name: "Anti-Jailbreak"
@@ -137,9 +193,9 @@ forbidden_patterns:
   - "DAN"
 required_patterns: []
 """,
-    "eu_ai_act": """
+    "safety": """
 version: "1.0.0"
-name: "EU AI Act Compliance"
+name: "Safety Policy"
 thresholds:
   min_confidence: 0.75
 forbidden_patterns:
@@ -148,9 +204,9 @@ forbidden_patterns:
 required_patterns:
   - "AI"
 """,
-    "finance": """
+    "content_quality": """
 version: "1.0.0"
-name: "Finance Policy"
+name: "Content Quality Policy"
 thresholds:
   min_confidence: 0.85
 forbidden_patterns:
@@ -241,40 +297,25 @@ class EvaluateResponse(BaseModel):
     drift_mode: str
     drift_score: float
 
-class ChainStatusResponse(BaseModel):
-    chain_length: int
-    integrity: bool
-    tampered_at: Optional[int]
-    drift_mode: str
-    drift_score: float
-
 # ════════════════════════════════════════════════════════════════════════════════
-# Shared Evaluation Logic (чтобы не дублировать код между fast и strict)
+# Shared Evaluation Logic
 # ════════════════════════════════════════════════════════════════════════════════
 def _process_evaluation(req: EvaluateRequest, tier: str) -> EvaluateResponse:
     start = time.time()
     if not req.response or not req.response.strip():
         raise HTTPException(status_code=400, detail="response field is required")
     
-    policy_yaml = BUILTIN_POLICIES.get(req.policy, req.policy or DEFAULT_POLICY)
-    
+    policy_yaml = BUILTIN_POLICIES.get(req.policy, req.policy or BUILTIN_POLICIES["default"])
     verdict, confidence, reason, policy_version = evaluate_policy(req.response, policy_yaml)
     
     input_hash = "0x" + sha256hex(req.response)[:16]
     policy_hash = sha256hex(policy_yaml)[:16]
     
-    # Расширенное добавление в цепочку с метаданными (без сырого текста!)
     tx_hash, chain_idx = _chain.append(
-        verdict=verdict,
-        input_hash=input_hash,
-        policy_hash=policy_hash,
-        agent_id=req.agent_id,
-        reason=reason,
-        confidence=confidence,
-        task_type=req.task_type
+        verdict=verdict, input_hash=input_hash, policy_hash=policy_hash,
+        agent_id=req.agent_id, reason=reason, confidence=confidence, task_type=req.task_type
     )
     
-    # Drift & Telemetry
     _commit_rate.append(1.0 if verdict == "COMMIT" else 0.0)
     if len(_commit_rate) > 100:
         _commit_rate.pop(0)
@@ -309,7 +350,7 @@ def _process_evaluation(req: EvaluateRequest, tier: str) -> EvaluateResponse:
     )
 
 # ════════════════════════════════════════════════════════════════════════════════
-# PRE-ACTION ROUTES (Fixed Pricing)
+# PRE-ACTION & POST-ACTION ROUTES
 # ════════════════════════════════════════════════════════════════════════════════
 @app.post("/evaluate/fast", response_model=EvaluateResponse)
 @pay("$0.01")
@@ -321,28 +362,19 @@ async def evaluate_fast(req: EvaluateRequest):
 async def evaluate_strict(req: EvaluateRequest):
     return _process_evaluation(req, tier="strict")
 
-# ════════════════════════════════════════════════════════════════════════════════
-# POST-ACTION ROUTES (Fixed Pricing)
-# ════════════════════════════════════════════════════════════════════════════════
 @app.get("/audit/{tx_hash}")
 @pay("$0.10")
 async def audit_decode(tx_hash: str):
     entry = _chain.get_by_tx(tx_hash)
     if not entry:
         raise HTTPException(404, "tx_hash not found in chain")
-    
     intact, _ = _chain.verify()
     return {
-        "tx_hash": entry["tx_hash"],
-        "agent_id": entry["agent_id"],
-        "verdict": entry["verdict"],
-        "reason": entry["reason"],
-        "confidence": entry["confidence"],
-        "task_type": entry["task_type"],
-        "timestamp": entry["timestamp"],
-        "chain_index": entry["index"],
-        "prev_hash": entry["prev_hash"],
-        "chain_integrity": intact,
+        "tx_hash": entry["tx_hash"], "agent_id": entry["agent_id"],
+        "verdict": entry["verdict"], "reason": entry["reason"],
+        "confidence": entry["confidence"], "task_type": entry["task_type"],
+        "timestamp": entry["timestamp"], "chain_index": entry["index"],
+        "prev_hash": entry["prev_hash"], "chain_integrity": intact,
     }
 
 @app.get("/audit/{tx_hash}/deep")
@@ -351,44 +383,22 @@ async def audit_decode_deep(tx_hash: str):
     entry = _chain.get_by_tx(tx_hash)
     if not entry:
         raise HTTPException(404, "tx_hash not found in chain")
-    
     intact, tampered_at = _chain.verify()
     return {
-        "tx_hash": entry["tx_hash"],
-        "agent_id": entry["agent_id"],
-        "verdict": entry["verdict"],
-        "reason": entry["reason"],
-        "confidence": entry["confidence"],
-        "task_type": entry["task_type"],
-        "timestamp": entry["timestamp"],
-        "chain_index": entry["index"],
-        "prev_hash": entry["prev_hash"],
-        "chain_integrity": intact,
-        "tampered_at_index": tampered_at,
-        "drift_context": entry["drift_context"],  # Платная ценность за $0.50
+        "tx_hash": entry["tx_hash"], "agent_id": entry["agent_id"],
+        "verdict": entry["verdict"], "reason": entry["reason"],
+        "confidence": entry["confidence"], "task_type": entry["task_type"],
+        "timestamp": entry["timestamp"], "chain_index": entry["index"],
+        "prev_hash": entry["prev_hash"], "chain_integrity": intact,
+        "tampered_at_index": tampered_at, "drift_context": entry["drift_context"],
     }
 
 # ════════════════════════════════════════════════════════════════════════════════
-# Utility Routes (сохранены из оригинала)
+# Utility Routes
 # ════════════════════════════════════════════════════════════════════════════════
 @app.get("/")
 def root():
-    return {
-        "service": "DCL Evaluator Webhook API (x402)",
-        "version": "2.0.0",
-        "by": "Fronesis Labs — fronesislabs.io",
-        "endpoints": {
-            "POST /evaluate/fast": "Evaluate LLM output (Fast tier, $0.01)",
-            "POST /evaluate/strict": "Evaluate LLM output (Strict tier, $0.05)",
-            "GET /audit/{tx_hash}": "Basic audit decode ($0.10)",
-            "GET /audit/{tx_hash}/deep": "Deep forensic audit ($0.50)",
-            "GET /chain/status": "Chain integrity + drift status",
-            "GET /chain/export": "Export full audit trail",
-            "GET /policies": "List available builtin policies",
-            "GET /health": "Health check",
-        },
-        "demo": "POST /evaluate/fast with {response: '...', policy: 'default', agent_id: 'bot_1'}",
-    }
+    return {"service": "DCL Evaluator Webhook API (x402)", "version": "2.0.0", "by": "Fronesis Labs"}
 
 @app.get("/health")
 def health():
@@ -398,44 +408,19 @@ def health():
 def list_policies():
     return {"policies": list(BUILTIN_POLICIES.keys())}
 
-@app.get("/chain/status", response_model=ChainStatusResponse)
+@app.get("/chain/status")
 def chain_status():
     intact, tampered_at = _chain.verify()
     drift_mode, drift_score = get_drift_mode(_commit_rate)
-    return ChainStatusResponse(
-        chain_length=len(_chain),
-        integrity=intact,
-        tampered_at=tampered_at,
-        drift_mode=drift_mode,
-        drift_score=drift_score,
-    )
+    return {"chain_length": len(_chain), "integrity": intact, "tampered_at": tampered_at, "drift_mode": drift_mode, "drift_score": drift_score}
 
 @app.get("/chain/export")
 def chain_export():
     intact, _ = _chain.verify()
-    return {
-        "chain": _chain.export(),
-        "integrity": intact,
-        "exported_at": time.time(),
-        "by": "DCL Evaluator — Fronesis Labs",
-    }
+    return {"chain": _chain.export(), "integrity": intact, "exported_at": time.time()}
 
-# ════════════════════════════════════════════════════════════════════════════════
-# Entry point
-# ════════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8080))
-    print(f"""
-╔══════════════════════════════════════════════════════╗
-║       DCL Evaluator — Webhook Server v2.0.0          ║
-║       Fronesis Labs · fronesislabs.io                ║
-║       x402 Micropayments ENABLED                     ║
-╠══════════════════════════════════════════════════════╣
-║  POST http://localhost:{port}/evaluate/fast        ║
-║  POST http://localhost:{port}/evaluate/strict      ║
-║  GET  http://localhost:{port}/audit/{{tx_hash}}      ║
-║  GET  http://localhost:{port}/docs  (Swagger UI)     ║
-╚══════════════════════════════════════════════════════╝
-    """)
+    print(f"\n╔══════════════════════════════════════════════════════╗\n║       DCL Evaluator — Webhook Server v2.0.0          ║\n║       Fronesis Labs · fronesislabs.io                ║\n║       x402 Micropayments ENABLED                     ║\n╚══════════════════════════════════════════════════════╝\n")
     uvicorn.run("webhook_server:app", host="0.0.0.0", port=port, reload=False)
