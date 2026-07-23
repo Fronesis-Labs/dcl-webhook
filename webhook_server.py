@@ -7,13 +7,23 @@ import math
 import os
 import time
 import uuid
-from typing import Optional, Tuple
+import sqlite3
+import json
+from typing import Optional, Tuple, List
+
 import yaml
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from fastapi_x402 import init_x402, pay
-from telemetry import get_collector
+
+# Импортируем телеметрию, если она есть, иначе заглушка
+try:
+    from telemetry import get_collector
+except ImportError:
+    class DummyCollector:
+        def record_decision(self, **kwargs): pass
+    def get_collector(): return DummyCollector()
 
 # ════════════════════════════════════════════════════════════════════════════════
 # App & x402 Initialization
@@ -44,10 +54,6 @@ init_x402(
 def sha256hex(s: str) -> str:
     return hashlib.sha256(s.encode()).hexdigest()
 
-import sqlite3
-import json
-from typing import Tuple, Optional
-
 class ChainState:
     """SQLite-backed tamper-evident chain. Stores METADATA ONLY (Privacy-First)."""
     GENESIS = "0" * 64
@@ -57,7 +63,7 @@ class ChainState:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS chain (
-                index INTEGER PRIMARY KEY,
+                idx INTEGER PRIMARY KEY,
                 tx_hash TEXT UNIQUE NOT NULL,
                 prev_hash TEXT NOT NULL,
                 verdict TEXT NOT NULL,
@@ -76,60 +82,41 @@ class ChainState:
 
     def append(self, verdict: str, input_hash: str, policy_hash: str, 
                agent_id: str, reason: str, confidence: float, task_type: str) -> Tuple[str, int]:
-        # Достаём prev_hash из базы — критично для рестарта
-        last = self._conn.execute("SELECT tx_hash FROM chain ORDER BY index DESC LIMIT 1").fetchone()
+        last = self._conn.execute("SELECT tx_hash FROM chain ORDER BY idx DESC LIMIT 1").fetchone()
         prev_hash = last[0] if last else self.GENESIS
+        new_idx = self._conn.execute("SELECT COALESCE(MAX(idx), -1) + 1 FROM chain").fetchone()[0]
         
-        idx = self._conn.execute("SELECT COALESCE(MAX(index), -1) + 1 FROM chain").fetchone()[0]
-        
-        content = f"{idx}:{verdict}:{input_hash}:{policy_hash}:{prev_hash}:{time.time()}"
+        content = f"{new_idx}:{verdict}:{input_hash}:{policy_hash}:{prev_hash}:{time.time()}"
         tx_hash = "0x" + sha256hex(content)[:32]
         
-        drift_context = {
-            "environment": "production-edge",
-            "policy_version_hash": policy_hash
-        }
+        drift_context = {"environment": "production-edge", "policy_version_hash": policy_hash}
         
         self._conn.execute("""
-            INSERT INTO chain (index, tx_hash, prev_hash, verdict, input_hash, policy_hash, 
+            INSERT INTO chain (idx, tx_hash, prev_hash, verdict, input_hash, policy_hash, 
                              agent_id, reason, confidence, task_type, timestamp, drift_context)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (idx, tx_hash, prev_hash, verdict, input_hash, policy_hash, 
+        """, (new_idx, tx_hash, prev_hash, verdict, input_hash, policy_hash, 
               agent_id, reason, confidence, task_type, time.time(), json.dumps(drift_context)))
         self._conn.commit()
-        
-        return tx_hash, idx
+        return tx_hash, new_idx
 
     def get_by_tx(self, tx_hash: str) -> Optional[dict]:
         row = self._conn.execute("""
-            SELECT index, tx_hash, prev_hash, verdict, input_hash, policy_hash, 
+            SELECT idx, tx_hash, prev_hash, verdict, input_hash, policy_hash, 
                    agent_id, reason, confidence, task_type, timestamp, drift_context
             FROM chain WHERE tx_hash = ?
         """, (tx_hash,)).fetchone()
-        
         if not row:
             return None
-        
         return {
-            "index": row[0],
-            "tx_hash": row[1],
-            "prev_hash": row[2],
-            "verdict": row[3],
-            "input_hash": row[4],
-            "policy_hash": row[5],
-            "agent_id": row[6],
-            "reason": row[7],
-            "confidence": row[8],
-            "task_type": row[9],
-            "timestamp": row[10],
+            "index": row[0], "tx_hash": row[1], "prev_hash": row[2], "verdict": row[3],
+            "input_hash": row[4], "policy_hash": row[5], "agent_id": row[6], "reason": row[7],
+            "confidence": row[8], "task_type": row[9], "timestamp": row[10],
             "drift_context": json.loads(row[11])
         }
 
     def verify(self) -> Tuple[bool, Optional[int]]:
-        rows = self._conn.execute("""
-            SELECT index, prev_hash, tx_hash FROM chain ORDER BY index
-        """).fetchall()
-        
+        rows = self._conn.execute("SELECT idx, prev_hash, tx_hash FROM chain ORDER BY idx").fetchall()
         for i, row in enumerate(rows):
             expected_prev = rows[i-1][2] if i > 0 else self.GENESIS
             if row[1] != expected_prev:
@@ -138,23 +125,14 @@ class ChainState:
 
     def export(self) -> list[dict]:
         rows = self._conn.execute("""
-            SELECT index, tx_hash, prev_hash, verdict, input_hash, policy_hash, 
+            SELECT idx, tx_hash, prev_hash, verdict, input_hash, policy_hash, 
                    agent_id, reason, confidence, task_type, timestamp, drift_context
-            FROM chain ORDER BY index
+            FROM chain ORDER BY idx
         """).fetchall()
-        
         return [{
-            "index": r[0],
-            "tx_hash": r[1],
-            "prev_hash": r[2],
-            "verdict": r[3],
-            "input_hash": r[4],
-            "policy_hash": r[5],
-            "agent_id": r[6],
-            "reason": r[7],
-            "confidence": r[8],
-            "task_type": r[9],
-            "timestamp": r[10],
+            "index": r[0], "tx_hash": r[1], "prev_hash": r[2], "verdict": r[3],
+            "input_hash": r[4], "policy_hash": r[5], "agent_id": r[6], "reason": r[7],
+            "confidence": r[8], "task_type": r[9], "timestamp": r[10],
             "drift_context": json.loads(r[11])
         } for r in rows]
 
@@ -254,14 +232,19 @@ def get_drift_mode(commit_rate: list[float]) -> Tuple[str, float]:
     n = len(commit_rate)
     if n < 5:
         return "NORMAL", 0.0
+    
     window = min(10, n)
     baseline_vals = commit_rate[:-window]
     if not baseline_vals:
         return "NORMAL", 0.0
+        
     baseline = sum(baseline_vals) / len(baseline_vals) or 0.01
     current = sum(commit_rate[-window:]) / window
+    
+    # ИСПРАВЛЕНО: было "win dow", стало "window"
     z = (current - baseline) / math.sqrt(baseline * (1 - baseline) / window)
     abs_z = abs(z)
+    
     if abs_z > 3.5:
         return "BLOCK", round(z, 2)
     elif abs_z > 2.5:
@@ -297,6 +280,28 @@ class EvaluateResponse(BaseModel):
     drift_mode: str
     drift_score: float
 
+class BatchItem(BaseModel):
+    response: str
+    policy: Optional[str] = "default"
+    task_type: Optional[str] = "batch_item"
+
+class BatchEvaluateRequest(BaseModel):
+    items: List[BatchItem]
+    agent_id: str
+    max_items: int = 20
+
+class PipelineStartRequest(BaseModel):
+    agent_id: str
+    scope: str = "default"
+    ttl_seconds: int = 3600
+
+class PipelineStartResponse(BaseModel):
+    pipeline_id: str
+    agent_id: str
+    scope: str
+    expires_at: float
+    drift_mode: str
+
 # ════════════════════════════════════════════════════════════════════════════════
 # Shared Evaluation Logic
 # ════════════════════════════════════════════════════════════════════════════════
@@ -304,7 +309,7 @@ def _process_evaluation(req: EvaluateRequest, tier: str) -> EvaluateResponse:
     start = time.time()
     if not req.response or not req.response.strip():
         raise HTTPException(status_code=400, detail="response field is required")
-    
+        
     policy_yaml = BUILTIN_POLICIES.get(req.policy, req.policy or BUILTIN_POLICIES["default"])
     verdict, confidence, reason, policy_version = evaluate_policy(req.response, policy_yaml)
     
@@ -319,8 +324,8 @@ def _process_evaluation(req: EvaluateRequest, tier: str) -> EvaluateResponse:
     _commit_rate.append(1.0 if verdict == "COMMIT" else 0.0)
     if len(_commit_rate) > 100:
         _commit_rate.pop(0)
+        
     drift_mode, drift_score = get_drift_mode(_commit_rate)
-    
     latency_ms = int((time.time() - start) * 1000)
     pipeline_id = req.pipeline_id or str(uuid.uuid4())[:8]
     
@@ -361,6 +366,51 @@ async def evaluate_fast(req: EvaluateRequest):
 @pay("$0.05")
 async def evaluate_strict(req: EvaluateRequest):
     return _process_evaluation(req, tier="strict")
+
+@app.post("/evaluate/jailbreak", response_model=EvaluateResponse)
+@pay("$0.02")
+async def evaluate_jailbreak(req: EvaluateRequest):
+    req.policy = "anti_jailbreak"
+    return _process_evaluation(req, tier="jailbreak")
+
+@app.post("/evaluate/safety", response_model=EvaluateResponse)
+@pay("$0.01")
+async def evaluate_safety(req: EvaluateRequest):
+    req.policy = "safety"
+    return _process_evaluation(req, tier="safety")
+
+@app.post("/evaluate/quality", response_model=EvaluateResponse)
+@pay("$0.03")
+async def evaluate_quality(req: EvaluateRequest):
+    req.policy = "content_quality"
+    return _process_evaluation(req, tier="quality")
+
+@app.post("/evaluate/batch", response_model=dict)
+@pay("$0.10")
+async def evaluate_batch(req: BatchEvaluateRequest):
+    if len(req.items) > req.max_items:
+        raise HTTPException(400, f"Batch limited to {req.max_items} items")
+    
+    results = []
+    for item in req.items:
+        temp_req = EvaluateRequest(
+            response=item.response, policy=item.policy, agent_id=req.agent_id, task_type=item.task_type
+        )
+        results.append(_process_evaluation(temp_req, tier="batch"))
+    
+    return {"batch_id": str(uuid.uuid4())[:8], "agent_id": req.agent_id, "count": len(results), "results": results}
+
+@app.post("/pipeline/start", response_model=PipelineStartResponse)
+@pay("$0.05")
+async def pipeline_start(req: PipelineStartRequest):
+    pipeline_id = f"pl_{uuid.uuid4().hex[:12]}"
+    return PipelineStartResponse(
+        pipeline_id=pipeline_id,
+        agent_id=req.agent_id,
+        scope=req.scope,
+        expires_at=time.time() + req.ttl_seconds,
+        drift_mode="NORMAL"
+    )
 
 @app.get("/audit/{tx_hash}")
 @pay("$0.10")
@@ -412,7 +462,13 @@ def list_policies():
 def chain_status():
     intact, tampered_at = _chain.verify()
     drift_mode, drift_score = get_drift_mode(_commit_rate)
-    return {"chain_length": len(_chain), "integrity": intact, "tampered_at": tampered_at, "drift_mode": drift_mode, "drift_score": drift_score}
+    return {
+        "chain_length": len(_chain), 
+        "integrity": intact, 
+        "tampered_at": tampered_at, 
+        "drift_mode": drift_mode, 
+        "drift_score": drift_score
+    }
 
 @app.get("/chain/export")
 def chain_export():
@@ -422,5 +478,9 @@ def chain_export():
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8080))
-    print(f"\n╔══════════════════════════════════════════════════════╗\n║       DCL Evaluator — Webhook Server v2.0.0          ║\n║       Fronesis Labs · fronesislabs.io                ║\n║       x402 Micropayments ENABLED                     ║\n╚══════════════════════════════════════════════════════╝\n")
+    print("\n╔══════════════════════════════════════════════════════╗")
+    print("║       DCL Evaluator — Webhook Server v2.0.0          ║")
+    print("║       Fronesis Labs · fronesislabs.io                ║")
+    print("║       x402 Micropayments ENABLED                     ║")
+    print("╚══════════════════════════════════════════════════════╝\n")
     uvicorn.run("webhook_server:app", host="0.0.0.0", port=port, reload=False)
