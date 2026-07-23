@@ -7,128 +7,127 @@
     "provider": "Fronesis Labs",
     "base_url": "https://fronesislabs.com"
   },
-  "tools": [
-    {
-      "name": "evaluate_fast",
-      "description": "FAST Pre-Action Audit ($0.01). For high-volume, low-risk LLM outputs. Returns a tamper-evident tx_hash. Does NOT store raw content.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "response": { "type": "string", "description": "The LLM output text to be evaluated." },
-          "policy": { "type": "string", "description": "Policy to apply. Built-in: 'default', 'anti_jailbreak', 'safety', 'content_quality'.", "default": "default" },
-          "agent_id": { "type": "string", "description": "Identifier of the AI agent making the request." },
-          "task_type": { "type": "string", "description": "Type of task (e.g., 'summarization', 'classification')." }
-        },
-        "required": ["response", "agent_id"]
-      }
-    },
-    {
-      "name": "evaluate_strict",
-      "description": "STRICT Pre-Action Audit ($0.05). For high-stakes outputs requiring deeper analysis and higher confidence thresholds.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "response": { "type": "string", "description": "The LLM output text to be evaluated." },
-          "policy": { "type": "string", "description": "Policy to apply.", "default": "safety" },
-          "agent_id": { "type": "string", "description": "Identifier of the AI agent making the request." },
-          "task_type": { "type": "string", "description": "Type of task (e.g., 'critical_reasoning', 'sensitive_content')." }
-        },
-        "required": ["response", "agent_id"]
-      }
-    },
-    {
-      "name": "evaluate_jailbreak",
-      "description": "PRE-ACTION Instruction Adherence Check ($0.02). Detects prompt injection patterns, role-hijacking attempts, and structural anomalies in LLM inputs/outputs.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "response": { "type": "string", "description": "The LLM output text to be evaluated." },
-          "agent_id": { "type": "string", "description": "Identifier of the AI agent." }
-        },
-        "required": ["response", "agent_id"]
-      }
-    },
-    {
-      "name": "evaluate_safety",
-      "description": "PRE-ACTION Baseline Safety Check ($0.01). Fast screening for known harmful text patterns and policy violations. Optimized for high throughput.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "response": { "type": "string", "description": "The LLM output text to be evaluated." },
-          "agent_id": { "type": "string", "description": "Identifier of the AI agent." }
-        },
-        "required": ["response", "agent_id"]
-      }
-    },
-    {
-      "name": "evaluate_quality",
-      "description": "PRE-ACTION Content Quality & Drift Check ($0.03). Evaluates hallucination risk, format adherence, and contextual drift against baseline metrics.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "response": { "type": "string", "description": "The LLM output text to be evaluated." },
-          "agent_id": { "type": "string", "description": "Identifier of the AI agent." }
-        },
-        "required": ["response", "agent_id"]
-      }
-    },
-    {
-      "name": "evaluate_batch",
-      "description": "PRE-ACTION Bulk Processing ($0.10). Evaluates up to 20 items in a single x402 transaction. Cost-effective for multi-turn dialogue history or dataset sampling.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "response": { "type": "string" },
-                "policy": { "type": "string", "default": "default" }
-              },
-              "required": ["response"]
-            },
-            "maxItems": 20
-          },
-          "agent_id": { "type": "string" }
-        },
-        "required": ["items", "agent_id"]
-      }
-    },
-    {
-      "name": "pipeline_start",
-      "description": "SESSION Management ($0.05). Initializes a long-running audit session for continuous drift tracking across multiple LLM calls. Returns a unique pipeline_id.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "agent_id": { "type": "string", "description": "Identifier of the AI agent." },
-          "scope": { "type": "string", "description": "Context scope (e.g., 'default', 'extended').", "default": "default" },
-          "ttl_seconds": { "type": "integer", "description": "Session duration in seconds.", "default": 3600 }
-        },
-        "required": ["agent_id"]
-      }
-    },
-    {
-      "name": "audit_decode",
-      "description": "POST-ACTION Basic Audit ($0.10). Verify a past decision by tx_hash. Returns metadata (verdict, confidence, agent_id, reason) without exposing original raw content.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "tx_hash": { "type": "string", "description": "The transaction hash returned by a previous evaluate call." }
-        },
-        "required": ["tx_hash"]
-      }
-    },
-    {
-      "name": "audit_decode_deep",
-      "description": "POST-ACTION Deep Forensic Audit ($0.50). For detailed investigations. Provides everything in basic audit PLUS extended drift context, tamper-evidence indices, and environmental metadata.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "tx_hash": { "type": "string", "description": "The transaction hash to investigate deeply." }
-        },
-        "required": ["tx_hash"]
-      }
+ "tools": [
+  {
+    "name": "evaluate_fast",
+    "description": "FAST Pre-Action Audit ($0.01). For high-volume, low-risk LLM outputs. Returns a tamper-evident tx_hash. Does NOT store raw content.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "response": { "type": "string", "description": "The LLM output text to be evaluated." },
+        "policy": { "type": "string", "description": "Policy to apply. Built-in: 'default', 'anti_jailbreak', 'safety', 'content_quality'.", "default": "default" },
+        "agent_id": { "type": "string", "description": "Identifier of the AI agent making the request." },
+        "task_type": { "type": "string", "description": "Type of task (e.g., 'summarization', 'classification')." }
+      },
+      "required": ["response", "agent_id"]
     }
-  ]
-}
+  },
+  {
+    "name": "evaluate_strict",
+    "description": "STRICT Pre-Action Audit ($0.05). For high-stakes outputs requiring deeper analysis and higher confidence thresholds.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "response": { "type": "string", "description": "The LLM output text to be evaluated." },
+        "policy": { "type": "string", "description": "Policy to apply.", "default": "safety" },
+        "agent_id": { "type": "string", "description": "Identifier of the AI agent making the request." },
+        "task_type": { "type": "string", "description": "Type of task (e.g., 'critical_reasoning', 'sensitive_content')." }
+      },
+      "required": ["response", "agent_id"]
+    }
+  },
+  {
+    "name": "evaluate_jailbreak",
+    "description": "PRE-ACTION Instruction Adherence Check ($0.02). Detects prompt injection patterns, role-hijacking attempts, and structural anomalies in LLM inputs/outputs.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "response": { "type": "string", "description": "The LLM output text to be evaluated." },
+        "agent_id": { "type": "string", "description": "Identifier of the AI agent." }
+      },
+      "required": ["response", "agent_id"]
+    }
+  },
+  {
+    "name": "evaluate_safety",
+    "description": "PRE-ACTION Baseline Safety Check ($0.01). Fast screening for known harmful text patterns and policy violations. Optimized for high throughput.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "response": { "type": "string", "description": "The LLM output text to be evaluated." },
+        "agent_id": { "type": "string", "description": "Identifier of the AI agent." }
+      },
+      "required": ["response", "agent_id"]
+    }
+  },
+  {
+    "name": "evaluate_quality",
+    "description": "PRE-ACTION Content Quality & Drift Check ($0.03). Evaluates hallucination risk, format adherence, and contextual drift against baseline metrics.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "response": { "type": "string", "description": "The LLM output text to be evaluated." },
+        "agent_id": { "type": "string", "description": "Identifier of the AI agent." }
+      },
+      "required": ["response", "agent_id"]
+    }
+  },
+  {
+    "name": "evaluate_batch",
+    "description": "PRE-ACTION Bulk Processing ($0.10). Evaluates up to 20 items in a single x402 transaction. Cost-effective for multi-turn dialogue history or dataset sampling.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "response": { "type": "string" },
+              "policy": { "type": "string", "default": "default" }
+            },
+            "required": ["response"]
+          },
+          "maxItems": 20
+        },
+        "agent_id": { "type": "string" }
+      },
+      "required": ["items", "agent_id"]
+    }
+  },
+  {
+    "name": "pipeline_start",
+    "description": "SESSION Management ($0.05). Initializes a long-running audit session for continuous drift tracking across multiple LLM calls. Returns a unique pipeline_id.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "agent_id": { "type": "string", "description": "Identifier of the AI agent." },
+        "scope": { "type": "string", "description": "Context scope (e.g., 'default', 'extended').", "default": "default" },
+        "ttl_seconds": { "type": "integer", "description": "Session duration in seconds.", "default": 3600 }
+      },
+      "required": ["agent_id"]
+    }
+  },
+  {
+    "name": "audit_decode",
+    "description": "POST-ACTION Basic Audit ($0.10). Verify a past decision by tx_hash. Returns metadata (verdict, confidence, agent_id, reason) without exposing original raw content.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tx_hash": { "type": "string", "description": "The transaction hash returned by a previous evaluate call." }
+      },
+      "required": ["tx_hash"]
+    }
+  },
+  {
+    "name": "audit_decode_deep",
+    "description": "POST-ACTION Deep Forensic Audit ($0.50). For detailed investigations. Provides everything in basic audit PLUS extended drift context, tamper-evidence indices, and environmental metadata.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tx_hash": { "type": "string", "description": "The transaction hash to investigate deeply." }
+      },
+      "required": ["tx_hash"]
+    }
+  }
+]
