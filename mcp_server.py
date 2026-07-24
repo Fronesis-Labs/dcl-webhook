@@ -8,12 +8,17 @@ import uuid
 from typing import Optional, List
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from dcl_core import ChainState, BUILTIN_POLICIES, evaluate_policy, get_drift_mode, sha256hex
 
 mcp = FastMCP(
     "DCL Trust Oracle",
     instructions="Deterministic AI audit layer: tamper-evident, privacy-first policy evaluation "
                  "and post-action forensic decoding.",
+    transport_security=TransportSecuritySettings(
+        allowed_hosts=["mcp.fronesislabs.com", "localhost", "localhost:8081", "127.0.0.1", "127.0.0.1:8081"],
+        allowed_origins=["https://mcp.fronesislabs.com", "http://localhost:8081"],
+    ),
 )
 
 _chain = ChainState(os.environ.get("DCL_DB_PATH", "dcl_chain.db"))
