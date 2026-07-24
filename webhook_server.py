@@ -456,7 +456,7 @@ async def audit_decode_deep(request: Request, tx_hash: str):
     }
 
 # ════════════════════════════════════════════════════════════════════════════════
-# Utility Routes (без лимитов)
+# Utility Routes (no rate limits)
 # ════════════════════════════════════════════════════════════════════════════════
 @app.get("/")
 def root():
@@ -488,8 +488,8 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8080))
     print("\n╔══════════════════════════════════════════════════════╗")
-    print("║       DCL Evaluator — Webhook Server v2.0.0          ║")
-    print("║       Fronesis Labs · fronesislabs.io                ║")
-    print("║       x402 Micropayments + Rate Limiting ENABLED     ║")
+    print("║ DCL Evaluator — Webhook Server v2.0.0 ║")
+    print("║ Fronesis Labs · fronesislabs.io ║")
+    print("║ x402 Micropayments + Rate Limiting ENABLED ║")
     print("╚══════════════════════════════════════════════════════╝\n")
     uvicorn.run("webhook_server:app", host="0.0.0.0", port=port, reload=False)

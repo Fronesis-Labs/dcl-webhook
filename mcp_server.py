@@ -1,7 +1,7 @@
 """
-DCL Trust Oracle — MCP Server (для Smithery)
-Оборачивает DCL-логику (dcl_core.py) как настоящие MCP tools через FastMCP.
-x402-оплата здесь НЕ используется — это отдельный REST API (webhook_server.py).
+DCL Trust Oracle — MCP Server (for Smithery)
+Wraps the DCL logic (dcl_core.py) as real MCP tools via FastMCP.
+x402 payment is NOT used here — that lives in a separate REST API (webhook_server.py).
 """
 import os
 import uuid
@@ -20,6 +20,7 @@ mcp = FastMCP(
         allowed_origins=["https://mcp.fronesislabs.com", "http://localhost:8081"],
     ),
 )
+mcp._mcp_server.version = "2.0.1"
 
 _chain = ChainState(os.environ.get("DCL_DB_PATH", "dcl_chain.db"))
 _commit_rate: List[float] = []
@@ -51,19 +52,19 @@ def _run_evaluation(response: str, policy: str, agent_id: str, task_type: str) -
 
 @mcp.tool()
 def evaluate_fast(response: str, agent_id: str) -> dict:
-    """FAST Pre-Action Audit. Быстрая проверка ответа агента по дефолтной политике."""
+    """FAST Pre-Action Audit. Quick policy check of an agent's response using the default policy."""
     return _run_evaluation(response, "default", agent_id, "fast")
 
 
 @mcp.tool()
 def evaluate_strict(response: str, agent_id: str) -> dict:
-    """STRICT Pre-Action Audit. Строгая проверка с повышенным порогом уверенности."""
+    """STRICT Pre-Action Audit. Rigorous check with a higher confidence threshold."""
     return _run_evaluation(response, "default", agent_id, "strict")
 
 
 @mcp.tool()
 def evaluate_jailbreak(response: str, agent_id: str) -> dict:
-    """PRE-ACTION Instruction Adherence Check. Проверка на попытки джейлбрейка."""
+    """PRE-ACTION Instruction Adherence Check. Detects jailbreak attempts."""
     return _run_evaluation(response, "anti_jailbreak", agent_id, "jailbreak")
 
 
@@ -92,7 +93,7 @@ def evaluate_batch(items: List[dict], agent_id: str) -> dict:
 
 @mcp.tool()
 def pipeline_start(agent_id: str, scope: str = "default", ttl_seconds: int = 3600) -> dict:
-    """SESSION Management. Открывает pipeline-сессию для серии проверок."""
+    """SESSION Management. Opens a pipeline session for a series of checks."""
     import time
     pipeline_id = f"pl_{uuid.uuid4().hex[:12]}"
     return {"pipeline_id": pipeline_id, "agent_id": agent_id, "scope": scope,
@@ -101,7 +102,7 @@ def pipeline_start(agent_id: str, scope: str = "default", ttl_seconds: int = 360
 
 @mcp.tool()
 def audit_decode(tx_hash: str) -> dict:
-    """POST-ACTION Basic Audit. Достаёт запись из tamper-evident цепочки по tx_hash."""
+    """POST-ACTION Basic Audit. Retrieves a record from the tamper-evident chain by tx_hash."""
     entry = _chain.get_by_tx(tx_hash)
     if not entry:
         return {"error": "tx_hash not found in chain"}
@@ -114,7 +115,7 @@ def audit_decode(tx_hash: str) -> dict:
 
 @mcp.tool()
 def audit_decode_deep(tx_hash: str) -> dict:
-    """POST-ACTION Deep Forensic Audit. Расширенный вывод с drift_context и проверкой целостности цепочки."""
+    """POST-ACTION Deep Forensic Audit. Extended output with drift_context and full chain integrity verification."""
     entry = _chain.get_by_tx(tx_hash)
     if not entry:
         return {"error": "tx_hash not found in chain"}
