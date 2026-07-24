@@ -38,7 +38,7 @@ _commit_rate: List[float] = []
 
 # ════════════════════════════════════════════════════════════════════════════════
 # Output schemas (Pydantic models -> structured MCP output schemas)
-# ════════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 class EvaluateResult(BaseModel):
     verdict: str = Field(description="COMMIT if the response passed policy checks, otherwise NO_COMMIT.")
     confidence: float = Field(description="Confidence score of the verdict, from 0.0 to 1.0.")
@@ -110,7 +110,7 @@ _READ_ANNOTATIONS = ToolAnnotations(
 
 # ════════════════════════════════════════════════════════════════════════════════
 # MCP Tools (Strictly typed for Smithery parser compliance)
-# ══════════════════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
 
 @mcp.tool(
     name="dcl_evaluate_fast",
