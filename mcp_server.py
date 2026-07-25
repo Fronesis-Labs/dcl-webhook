@@ -7,6 +7,8 @@ server charges the same per-call prices as the REST API in webhook_server.py.
 Utility/session tools remain free where noted.
 """
 import os
+from dotenv import load_dotenv
+load_dotenv()
 import time
 import uuid
 from typing import Annotated, List, Optional
