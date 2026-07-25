@@ -125,7 +125,7 @@ _READ_ANNOTATIONS = ToolAnnotations(
 )
 
 
-@mcp.tool(annotations=_WRITE_ANNOTATIONS)
+@mcp.tool(title="Fast Pre-Action Audit", annotations=_WRITE_ANNOTATIONS)
 def dcl_evaluate_fast(
     response: Annotated[str, Field(description="The agent or LLM response text to audit.")],
     agent_id: Annotated[str, Field(description="Identifier of the agent that produced the response.")],
@@ -134,7 +134,7 @@ def dcl_evaluate_fast(
     return _run_evaluation(response, "default", agent_id, "fast")
 
 
-@mcp.tool(annotations=_WRITE_ANNOTATIONS)
+@mcp.tool(title="Strict Pre-Action Audit", annotations=_WRITE_ANNOTATIONS)
 def dcl_evaluate_strict(
     response: Annotated[str, Field(description="The agent or LLM response text to audit.")],
     agent_id: Annotated[str, Field(description="Identifier of the agent that produced the response.")],
@@ -143,7 +143,7 @@ def dcl_evaluate_strict(
     return _run_evaluation(response, "default", agent_id, "strict")
 
 
-@mcp.tool(annotations=_WRITE_ANNOTATIONS)
+@mcp.tool(title="Jailbreak Detection Check", annotations=_WRITE_ANNOTATIONS)
 def dcl_evaluate_jailbreak(
     response: Annotated[str, Field(description="The agent or LLM response text to check for jailbreak attempts.")],
     agent_id: Annotated[str, Field(description="Identifier of the agent that produced the response.")],
@@ -152,7 +152,7 @@ def dcl_evaluate_jailbreak(
     return _run_evaluation(response, "anti_jailbreak", agent_id, "jailbreak")
 
 
-@mcp.tool(annotations=_WRITE_ANNOTATIONS)
+@mcp.tool(title="Baseline Safety Check", annotations=_WRITE_ANNOTATIONS)
 def dcl_evaluate_safety(
     response: Annotated[str, Field(description="The agent or LLM response text to check for safety violations.")],
     agent_id: Annotated[str, Field(description="Identifier of the agent that produced the response.")],
@@ -161,7 +161,7 @@ def dcl_evaluate_safety(
     return _run_evaluation(response, "safety", agent_id, "safety")
 
 
-@mcp.tool(annotations=_WRITE_ANNOTATIONS)
+@mcp.tool(title="Content Quality & Drift Check", annotations=_WRITE_ANNOTATIONS)
 def dcl_evaluate_quality(
     response: Annotated[str, Field(description="The agent or LLM response text to check for quality and drift.")],
     agent_id: Annotated[str, Field(description="Identifier of the agent that produced the response.")],
@@ -170,7 +170,7 @@ def dcl_evaluate_quality(
     return _run_evaluation(response, "content_quality", agent_id, "quality")
 
 
-@mcp.tool(annotations=_WRITE_ANNOTATIONS)
+@mcp.tool(title="Batch Evaluation", annotations=_WRITE_ANNOTATIONS)
 def dcl_evaluate_batch(
     items: Annotated[
         List[dict],
@@ -186,7 +186,7 @@ def dcl_evaluate_batch(
     return BatchResult(batch_id=str(uuid.uuid4())[:8], agent_id=agent_id, count=len(results), results=results)
 
 
-@mcp.tool(annotations=_WRITE_ANNOTATIONS)
+@mcp.tool(title="Start Pipeline Session", annotations=_WRITE_ANNOTATIONS)
 def dcl_pipeline_start(
     agent_id: Annotated[str, Field(description="Identifier of the agent that owns this session.")],
     scope: Annotated[str, Field(description="Scope label for the session.")] = "default",
@@ -200,7 +200,7 @@ def dcl_pipeline_start(
     )
 
 
-@mcp.tool(annotations=_READ_ANNOTATIONS)
+@mcp.tool(title="Basic Audit Decode", annotations=_READ_ANNOTATIONS)
 def dcl_audit_decode(
     tx_hash: Annotated[str, Field(description="Transaction hash of the audit chain record to retrieve.")],
 ) -> AuditResult:
@@ -217,7 +217,7 @@ def dcl_audit_decode(
     )
 
 
-@mcp.tool(annotations=_READ_ANNOTATIONS)
+@mcp.tool(title="Deep Forensic Audit Decode", annotations=_READ_ANNOTATIONS)
 def dcl_audit_decode_deep(
     tx_hash: Annotated[str, Field(description="Transaction hash of the audit chain record to retrieve.")],
 ) -> AuditDeepResult:
