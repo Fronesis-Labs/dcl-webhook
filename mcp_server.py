@@ -156,7 +156,7 @@ _READ_ANNOTATIONS = ToolAnnotations(
 # PAID TOOLS — pricing mirrors webhook_server.py exactly
 # ════════════════════════════════════════════════════════════════════════════════
 @mcp.tool(title="Fast Pre-Action Audit", annotations=_WRITE_ANNOTATIONS)
-@price(amount=0.01, currency="USD")
+@price(price=0.01, currency="USD")
 def dcl_evaluate_fast(
     response: Annotated[str, Field(description="The agent or LLM response text to audit.")],
     agent_id: Annotated[str, Field(description="Identifier of the agent that produced the response.")],
@@ -167,7 +167,7 @@ def dcl_evaluate_fast(
 
 
 @mcp.tool(title="Strict Pre-Action Audit", annotations=_WRITE_ANNOTATIONS)
-@price(amount=0.05, currency="USD")
+@price(price=0.05, currency="USD")
 def dcl_evaluate_strict(
     response: Annotated[str, Field(description="The agent or LLM response text to audit.")],
     agent_id: Annotated[str, Field(description="Identifier of the agent that produced the response.")],
@@ -178,7 +178,7 @@ def dcl_evaluate_strict(
 
 
 @mcp.tool(title="Jailbreak Detection Check", annotations=_WRITE_ANNOTATIONS)
-@price(amount=0.02, currency="USD")
+@price(price=0.02, currency="USD")
 def dcl_evaluate_jailbreak(
     response: Annotated[str, Field(description="The agent or LLM response text to check for jailbreak attempts.")],
     agent_id: Annotated[str, Field(description="Identifier of the agent that produced the response.")],
@@ -189,7 +189,7 @@ def dcl_evaluate_jailbreak(
 
 
 @mcp.tool(title="Baseline Safety Check", annotations=_WRITE_ANNOTATIONS)
-@price(amount=0.01, currency="USD")
+@price(price=0.01, currency="USD")
 def dcl_evaluate_safety(
     response: Annotated[str, Field(description="The agent or LLM response text to check for safety violations.")],
     agent_id: Annotated[str, Field(description="Identifier of the agent that produced the response.")],
@@ -200,7 +200,7 @@ def dcl_evaluate_safety(
 
 
 @mcp.tool(title="Content Quality & Drift Check", annotations=_WRITE_ANNOTATIONS)
-@price(amount=0.03, currency="USD")
+@price(price=0.03, currency="USD")
 def dcl_evaluate_quality(
     response: Annotated[str, Field(description="The agent or LLM response text to check for quality and drift.")],
     agent_id: Annotated[str, Field(description="Identifier of the agent that produced the response.")],
@@ -211,7 +211,7 @@ def dcl_evaluate_quality(
 
 
 @mcp.tool(title="Batch Evaluation", annotations=_WRITE_ANNOTATIONS)
-@price(amount=0.10, currency="USD")
+@price(price=0.10, currency="USD")
 def dcl_evaluate_batch(
     items: Annotated[
         List[dict],
@@ -229,7 +229,7 @@ def dcl_evaluate_batch(
 
 
 @mcp.tool(title="Start Pipeline Session", annotations=_WRITE_ANNOTATIONS)
-@price(amount=0.05, currency="USD")
+@price(price=0.05, currency="USD")
 def dcl_pipeline_start(
     agent_id: Annotated[str, Field(description="Identifier of the agent that owns this session.")],
     ctx: Context,
@@ -245,7 +245,7 @@ def dcl_pipeline_start(
 
 
 @mcp.tool(title="Basic Audit Decode", annotations=_READ_ANNOTATIONS)
-@price(amount=0.10, currency="USD")
+@price(price=0.10, currency="USD")
 def dcl_audit_decode(
     tx_hash: Annotated[str, Field(description="Transaction hash of the audit chain record to retrieve.")],
     ctx: Context,
@@ -264,7 +264,7 @@ def dcl_audit_decode(
 
 
 @mcp.tool(title="Deep Forensic Audit Decode", annotations=_READ_ANNOTATIONS)
-@price(amount=0.50, currency="USD")
+@price(price=0.50, currency="USD")
 def dcl_audit_decode_deep(
     tx_hash: Annotated[str, Field(description="Transaction hash of the audit chain record to retrieve.")],
     ctx: Context,
