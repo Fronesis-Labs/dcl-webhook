@@ -1,6 +1,6 @@
 """
-DCL Core — чистая логика оценки политик и tamper-evident цепочки.
-Без FastAPI/x402 — используется и webhook_server.py (REST+оплата), и mcp_server.py (MCP).
+DCL Core — clean policy evaluation and tamper-evident chain logic.
+Used by both webhook_server.py (REST+payments) and mcp_server.py (MCP).
 """
 import hashlib
 import math
@@ -180,7 +180,8 @@ def get_drift_mode(commit_rate: list) -> Tuple[str, float]:
     baseline_vals = commit_rate[:-window]
     if not baseline_vals:
         return "NORMAL", 0.0
-    baseline = sum(baseline_vals) / len(baseline_vals) or 0.01
+    baseline = sum(baseline_vals) / len(baseline_vals)
+    baseline = min(max(baseline, 0.01), 0.99)  # avoid baseline*(1-baseline)==0 -> ZeroDivisionError
     current = sum(commit_rate[-window:]) / window
     z = (current - baseline) / math.sqrt(baseline * (1 - baseline) / window)
     abs_z = abs(z)
