@@ -51,7 +51,7 @@ init_x402(
     app,
     pay_to=os.environ.get("X402_WALLET", "0x0000000000000000000000000000000000000000"),
     facilitator_url="https://x402.org/facilitator",
-    network=["base", "avalanche"],
+    network=["base", "avalanche", "iotex"],
 )
 
 # ════════════════════════════════════════════════════════════════════════════════
