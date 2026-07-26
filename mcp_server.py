@@ -8,7 +8,7 @@ Utility/session tools remain free where noted.
 """
 import os
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 import time
 import uuid
 from typing import Annotated, List, Optional
