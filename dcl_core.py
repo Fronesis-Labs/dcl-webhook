@@ -125,7 +125,7 @@ required_patterns:
   - "AI"
 """,
     "content_quality": """
-version: "1.0.0"
+version: "2.0.0"
 name: "Content Quality Policy"
 thresholds:
   min_confidence: 0.85
@@ -133,8 +133,16 @@ forbidden_patterns:
   - "guaranteed returns"
   - "risk-free"
   - "definitely will"
-required_patterns:
-  - "past performance"
+  - "100% accurate"
+  - "there is no doubt"
+  - "it is certain that"
+  - "studies show"
+  - "research proves"
+  - "everyone knows"
+  - "as an ai, i can confirm"
+  - "i am certain"
+  - "without a doubt"
+required_patterns: []
 """,
 }
 
