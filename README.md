@@ -1,5 +1,8 @@
 # DCL Trust Oracle — x402 MCP Server
 
+[![dcl-webhook MCP server](https://glama.ai/mcp/servers/Fronesis-Labs/dcl-webhook/badges/card.svg)](https://glama.ai/mcp/servers/Fronesis-Labs/dcl-webhook)
+[![Score](https://glama.ai/mcp/servers/Fronesis-Labs/dcl-webhook/badges/score.svg)](https://glama.ai/mcp/servers/Fronesis-Labs/dcl-webhook/score)
+
 Deterministic AI audit layer with cryptographic micropayments via x402 protocol.
 
 ## What It Does
