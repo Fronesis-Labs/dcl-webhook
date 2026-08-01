@@ -129,6 +129,8 @@ Custom policies can be passed inline as YAML via the `policy` field.
 - **MCP Server:** https://mcp.fronesislabs.com
 - **MCP Manifest:** https://fronesislabs.com/.well-known/agent.json
 - **GitHub:** https://github.com/Fronesis-Labs/dcl-webhook
+- **Smithery.ai:** https://smithery.ai/servers/fronesislabs/dcl-trust-oracle
+- **Glama.ai:** https://glama.ai/mcp/servers/Fronesis-Labs/dcl-webhook
 
 ## Contact
 
