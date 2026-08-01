@@ -6,4 +6,4 @@ pydantic>=2.0.0
 httpx>=0.24.0
 fastapi-x402>=0.1.8
 slowapi>=0.1.9
-paymcp>=0.4.2
+paymcp @ git+https://github.com/Fronesis-Labs/paymcp.git@bd69607
