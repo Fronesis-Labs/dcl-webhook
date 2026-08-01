@@ -383,7 +383,13 @@ def dcl_audit_decode_deep(
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8081))
-    mcp.settings.host = "0.0.0.0"
-    mcp.settings.port = port
-    mcp.run(transport="streamable-http")
+    # MCP_TRANSPORT=stdio lets platforms like Glama wrap this server via
+    # mcp-proxy, which spawns the process and speaks stdio to it. Left
+    # unset (default), this keeps running as an HTTP server for PM2/VPS.
+    if os.environ.get("MCP_TRANSPORT") == "stdio":
+        mcp.run(transport="stdio")
+    else:
+        port = int(os.environ.get("PORT", 8081))
+        mcp.settings.host = "0.0.0.0"
+        mcp.settings.port = port
+        mcp.run(transport="streamable-http")
