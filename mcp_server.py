@@ -9,6 +9,8 @@ Utility/session tools remain free where noted.
 import os
 import time
 import uuid
+from dotenv import load_dotenv
+load_dotenv()
 from typing import Annotated, List, Optional
 
 from pydantic import BaseModel, Field
