@@ -236,7 +236,7 @@ def dcl_evaluate_fast(
     agent_id: Annotated[str, Field(description="Identifier of the agent that produced the response.")],
     ctx: Context,
 ) -> EvaluateResult:
-    """FAST Pre-Action Audit ($0.01). Quick policy check of an agent's response using the default policy."""
+    """FAST Pre-Action Audit ($0.01). Runs the response through the server's "default" policy: a substring check against 3 forbidden phrases ("ignore previous instructions", "jailbreak", "bypass safety") with a 0.7 minimum-confidence threshold. Each forbidden match found costs 0.4 confidence; if confidence falls below 0.7, or any match is found, the verdict is NO_COMMIT and `reason` lists which phrase triggered it. Otherwise COMMIT. Use this as the default low-cost first-pass gate before a risky agent action; switch to dcl_evaluate_strict for a broader, higher-bar check, or to dcl_evaluate_jailbreak / dcl_evaluate_safety / dcl_evaluate_quality for a narrower, single-topic check instead of the general-purpose default policy."""
     return _run_evaluation(response, "default", agent_id, "fast")
 
 
@@ -247,8 +247,8 @@ def dcl_evaluate_strict(
     agent_id: Annotated[str, Field(description="Identifier of the agent that produced the response.")],
     ctx: Context,
 ) -> EvaluateResult:
-    """STRICT Pre-Action Audit ($0.05). Rigorous check with a higher confidence threshold."""
-    return _run_evaluation(response, "default", agent_id, "strict")
+    """STRICT Pre-Action Audit ($0.05). Runs the response against a broader, higher-bar "strict" policy: the union of all forbidden phrases from the default, anti-jailbreak, and safety policies (8 phrases total), with a 0.85 minimum-confidence threshold instead of the default policy's 0.7. Each matched phrase costs 0.4 confidence; if confidence falls below 0.85, or any phrase matches, the verdict is NO_COMMIT with `reason` listing every match found. Use this instead of dcl_evaluate_fast when the cost of a false COMMIT is high — e.g. before an irreversible or high-stakes agent action — since it catches jailbreak- and safety-adjacent phrasing that the plain default policy would miss."""
+    return _run_evaluation(response, "strict", agent_id, "strict")
 
 
 @mcp.tool(title="Jailbreak Detection Check", annotations=_WRITE_ANNOTATIONS)
@@ -258,7 +258,7 @@ def dcl_evaluate_jailbreak(
     agent_id: Annotated[str, Field(description="Identifier of the agent that produced the response.")],
     ctx: Context,
 ) -> EvaluateResult:
-    """PRE-ACTION Instruction Adherence Check ($0.02). Detects jailbreak attempts."""
+    """PRE-ACTION Instruction Adherence Check ($0.02). Runs the "anti_jailbreak" policy: a substring check against 6 forbidden phrases ("ignore previous instructions", "jailbreak", "bypass safety", "pretend you are", "act as if", "DAN") with a 0.8 minimum-confidence threshold — each match costs 0.4 confidence. Returns COMMIT if no phrase matches and confidence stays at or above 0.8, otherwise NO_COMMIT with `reason` listing the matched phrase(s). Use this as a targeted, cheaper check when the concern is specifically prompt-injection / persona-hijack risk; use dcl_evaluate_strict instead when you also want safety- and default-policy phrases covered in the same call."""
     return _run_evaluation(response, "anti_jailbreak", agent_id, "jailbreak")
 
 
@@ -269,7 +269,7 @@ def dcl_evaluate_safety(
     agent_id: Annotated[str, Field(description="Identifier of the agent that produced the response.")],
     ctx: Context,
 ) -> EvaluateResult:
-    """PRE-ACTION Baseline Safety Check ($0.01)."""
+    """PRE-ACTION Baseline Safety Check ($0.01). Runs the "safety" policy: flags 2 forbidden disclaimers ("I cannot be held responsible", "no guarantees") and additionally REQUIRES the substring "AI" to appear somewhere in the response — missing it costs 0.2 confidence even with no forbidden phrase present. Minimum confidence is 0.75. Returns NO_COMMIT if confidence drops below 0.75, with `reason` naming the forbidden phrase found or the missing required pattern. Use this when you specifically need to confirm an AI-disclosure marker is present and the two disclaimer phrases are absent — not as a general-purpose safety net; for broader coverage use dcl_evaluate_fast or dcl_evaluate_strict instead."""
     return _run_evaluation(response, "safety", agent_id, "safety")
 
 
@@ -280,7 +280,7 @@ def dcl_evaluate_quality(
     agent_id: Annotated[str, Field(description="Identifier of the agent that produced the response.")],
     ctx: Context,
 ) -> EvaluateResult:
-    """PRE-ACTION Content Quality & Drift Check ($0.03)."""
+    """PRE-ACTION Content Quality & Drift Check ($0.03). Runs the "content_quality" policy: flags 12 absolutist or unverifiable-claim phrases (e.g. "guaranteed returns", "100% accurate", "studies show", "without a doubt") with a 0.85 minimum-confidence threshold — the highest bar of any single-policy tool. Returns NO_COMMIT if any phrase matches or confidence falls below 0.85, with `reason` listing the matched phrase(s). Use this to catch overconfident or unsubstantiated claims in generated content — a different concern from jailbreak or safety phrasing — e.g. before publishing agent-written copy or reports."""
     return _run_evaluation(response, "content_quality", agent_id, "quality")
 
 
@@ -316,7 +316,7 @@ def dcl_evaluate_batch(
     agent_id: Annotated[str, Field(description="Identifier of the agent that produced the responses.")],
     ctx: Context,
 ) -> BatchResult:
-    """PRE-ACTION Bulk Processing ($0.10). Evaluates multiple responses in a single call."""
+    """PRE-ACTION Bulk Processing ($0.10). Evaluates a list of items in one call; each item is a dict shaped {"response": str, "policy"?: str}, where policy defaults to "default" if omitted and may be any built-in policy name (default, strict, anti_jailbreak, safety, content_quality). Each item gets its own independent COMMIT/NO_COMMIT verdict via the same logic as the matching single-item evaluate_* tool; results are returned in input order under `results`, plus a shared `batch_id`. There is currently no enforced size limit on `items` in this tool. Use this instead of multiple single-item evaluate_* calls when checking several responses — optionally against different policies — in one priced call rather than paying per item separately."""
     results = [
         _run_evaluation(item["response"], item.get("policy", "default"), agent_id, "batch_item")
         for item in items
@@ -332,7 +332,7 @@ def dcl_pipeline_start(
     scope: Annotated[str, Field(description="Scope label for the session.")] = "default",
     ttl_seconds: Annotated[int, Field(description="Session time-to-live, in seconds.")] = 3600,
 ) -> PipelineStartResult:
-    """SESSION Management ($0.05). Opens a pipeline session for a series of checks."""
+    """SESSION Management ($0.05). Generates a new `pipeline_id` and returns session metadata (scope, expiry, initial drift_mode) for organizing a series of related checks under one identifier. Note: this call does not currently link the returned pipeline_id to later evaluate_* calls — there is no server-side session state that ties subsequent audits back to it; it is an identifier/timestamp issuer, not an active tracking session. Use this to obtain a shared reference ID for your own client-side grouping of a multi-step audit sequence; do not rely on it to automatically aggregate drift across calls."""
     pipeline_id = f"pl_{uuid.uuid4().hex[:12]}"
     return PipelineStartResult(
         pipeline_id=pipeline_id, agent_id=agent_id, scope=scope,

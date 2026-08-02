@@ -132,6 +132,22 @@ forbidden_patterns:
   - "DAN"
 required_patterns: []
 """,
+    "strict": """
+version: "1.0.0"
+name: "Strict Policy"
+thresholds:
+  min_confidence: 0.85
+forbidden_patterns:
+  - "ignore previous instructions"
+  - "jailbreak"
+  - "bypass safety"
+  - "pretend you are"
+  - "act as if"
+  - "DAN"
+  - "I cannot be held responsible"
+  - "no guarantees"
+required_patterns: []
+""",
     "safety": """
 version: "1.0.0"
 name: "Safety Policy"
