@@ -7,6 +7,7 @@ server charges the same per-call prices as the REST API in webhook_server.py.
 Utility/session tools remain free where noted.
 """
 import os
+import json
 import time
 import uuid
 from dotenv import load_dotenv
@@ -21,6 +22,9 @@ from mcp.types import ToolAnnotations
 from dcl_core import (
     ChainState, BUILTIN_POLICIES, evaluate_policy, get_drift_mode, sha256hex,
     detect_secrets, detect_pii, format_seal,
+)
+from dcl_crypto import (
+    detect_wallet, detect_jailbreak_crypto, detect_mev, detect_trade, detect_signal,
 )
 
 from paymcp import PayMCP, Mode, price
@@ -166,6 +170,96 @@ class AuditDeepResult(AuditResult):
     )
 
 
+# ════════════════════════════════════════════════════════════════════════════════
+# Crypto Suite output schemas (dcl_commit, dcl_evaluate_mev,
+# dcl_evaluate_jailbreak_crypto, dcl_evaluate_signal, dcl_evaluate_trade,
+# dcl_evaluate_wallet) — field shapes mirror dcl-skills/skills/crypto/*/references/mcp-tools.md
+# ════════════════════════════════════════════════════════════════════════════════
+class CommitResult(BaseModel):
+    tx_hash: str = Field(description="Tamper-evident proof of this specific commit.")
+    chain_hash: str = Field(description="Hash of the previous commit in the append-only chain that this one links to.")
+    chain_depth: int = Field(description="This commit's position (index) in the chain.")
+    input_hash: str = Field(description="Hash of the committed decision text (raw content is never stored).")
+    timestamp: float = Field(description="Unix timestamp when this record was sealed.")
+
+
+class CryptoFinding(BaseModel):
+    type: str = Field(description="The specific pattern category matched.")
+    severity: str = Field(description="critical or major.")
+    regulatory_reference: Optional[str] = Field(
+        default=None, description="Illustrative regulatory tag for this finding type (e.g. MiFID II, FCA), if applicable."
+    )
+
+
+class MevResult(BaseModel):
+    verdict: str = Field(description="COMMIT if the response passed the MEV/compliance screen, otherwise NO_COMMIT.")
+    confidence: float = Field(description="Confidence score of the verdict, from 0.0 to 1.0.")
+    findings: List[CryptoFinding] = Field(description="All matched patterns. Empty list if verdict is COMMIT.")
+    tx_hash: str = Field(description="Hash of this record in the tamper-evident audit chain.")
+    chain_index: int = Field(description="Sequential index of this record in the audit chain.")
+    input_hash: str = Field(description="Hash of the screened text (raw content is never stored).")
+    timestamp: float = Field(description="Unix timestamp when this record was sealed.")
+
+
+class JailbreakCryptoResult(BaseModel):
+    verdict: str = Field(description="COMMIT if no injection pattern matched, otherwise NO_COMMIT.")
+    confidence: float = Field(description="Confidence score of the verdict, from 0.0 to 1.0.")
+    reason: str = Field(description="Human-readable explanation of the verdict.")
+    findings: List[CryptoFinding] = Field(description="All matched patterns. Empty list if verdict is COMMIT.")
+    tx_hash: str = Field(description="Hash of this record in the tamper-evident audit chain.")
+    chain_index: int = Field(description="Sequential index of this record in the audit chain.")
+    input_hash: str = Field(description="Hash of the screened text (raw content is never stored).")
+    policy_version: str = Field(description="Version of the crypto jailbreak policy that was applied.")
+
+
+class SignalResult(BaseModel):
+    verdict: str = Field(description="COMMIT if no fabrication/overconfidence pattern matched, otherwise NO_COMMIT.")
+    confidence: float = Field(description="Confidence score of the verdict, from 0.0 to 1.0.")
+    reason: str = Field(description="Human-readable explanation of the verdict.")
+    findings: List[CryptoFinding] = Field(description="All matched patterns. Empty list if verdict is COMMIT.")
+    tx_hash: str = Field(description="Hash of this record in the tamper-evident audit chain.")
+    chain_index: int = Field(description="Sequential index of this record in the audit chain.")
+    input_hash: str = Field(description="Hash of the screened text (raw content is never stored).")
+    timestamp: float = Field(description="Unix timestamp when this record was sealed.")
+
+
+class TradeReceipt(BaseModel):
+    tx_hash: str = Field(description="Tamper-evident proof of this specific trade-verification record.")
+    chain_hash: str = Field(description="Hash of the previous commit in the append-only chain that this one links to.")
+    chain_depth: int = Field(description="This record's position (index) in the chain.")
+
+
+class TradeResult(BaseModel):
+    verdict: str = Field(description="COMMIT if the trade decision's language passed the screen, otherwise NO_COMMIT.")
+    confidence: float = Field(description="Confidence score of the verdict, from 0.0 to 1.0.")
+    reason: str = Field(description="Human-readable explanation of the verdict.")
+    findings: List[CryptoFinding] = Field(description="All matched patterns. Empty list if verdict is COMMIT.")
+    trade_receipt: TradeReceipt = Field(description="Immutable receipt for this trade-verification record.")
+    input_hash: str = Field(description="Hash of the screened text (raw content is never stored).")
+    timestamp: float = Field(description="Unix timestamp when this record was sealed.")
+
+
+class WalletFinding(BaseModel):
+    type: str = Field(description="seed_phrase, private_key, wallet_address, or wallet_api_credential.")
+    position: int = Field(description="Character offset of the match in the submitted text.")
+    redacted_sample: str = Field(description="Masked version of the match — never the real value.")
+    severity: str = Field(description="critical or major.")
+
+
+class WalletResult(BaseModel):
+    verdict: str = Field(description="COMMIT if nothing was found, otherwise NO_COMMIT. Wallet secrets have no safe threshold.")
+    confidence: float = Field(description="Confidence score of the verdict, from 0.0 to 1.0.")
+    reason: str = Field(description="Human-readable explanation of the verdict.")
+    findings: List[WalletFinding] = Field(description="All matches found. Empty list if verdict is COMMIT.")
+    sanitized_output: Optional[str] = Field(default=None, description="Input text with all matches redacted. Null if verdict is COMMIT.")
+    risk_score: float = Field(description="0.0-1.0 risk score based on number and severity of findings.")
+    tx_hash: str = Field(description="Hash of this record in the tamper-evident audit chain.")
+    chain_index: int = Field(description="Sequential index of this record in the audit chain.")
+    input_hash: str = Field(description="Hash of the scanned text (raw content is never stored).")
+    policy_version: str = Field(description="Version of the wallet-guardian policy that was applied.")
+    timestamp: float = Field(description="Unix timestamp when this record was sealed.")
+
+
 def _run_evaluation(response: str, policy: str, agent_id: str, task_type: str) -> EvaluateResult:
     policy_yaml = BUILTIN_POLICIES.get(policy, policy or BUILTIN_POLICIES["default"])
     verdict, confidence, reason, policy_version = evaluate_policy(response, policy_yaml)
@@ -215,6 +309,100 @@ def _run_detection(text: str, detector, policy_label: str, agent_id: str, task_t
         categories_checked=result["categories_checked"], categories_clear=result["categories_clear"],
         tx_hash=tx_hash, chain_index=chain_idx, input_hash=input_hash,
         timestamp=ts, seal_text=seal["seal_text"], verify_url=seal["verify_url"],
+    )
+
+
+def _commit_to_chain(input_text: str, verdict: str, reason: str, confidence: float,
+                      agent_id: str, task_type: str, policy_label: str):
+    """Shared chain-append helper for the crypto suite tools — same pattern as
+    _run_evaluation/_run_detection above, factored out since all six crypto
+    tools need the tx_hash/chain_index/input_hash triple but each has a
+    different result shape."""
+    input_hash = "0x" + sha256hex(input_text)[:16]
+    policy_hash = sha256hex(policy_label)[:16]
+    tx_hash, chain_idx = _chain.append(
+        verdict=verdict, input_hash=input_hash, policy_hash=policy_hash,
+        agent_id=agent_id, reason=reason, confidence=confidence, task_type=task_type,
+    )
+    return tx_hash, chain_idx, input_hash
+
+
+def _run_commit(decision: str, agent_id: str, prior_checks: Optional[dict]) -> CommitResult:
+    reason = f"crypto_commit; prior_checks={json.dumps(prior_checks)}" if prior_checks else "crypto_commit"
+    tx_hash, chain_idx, input_hash = _commit_to_chain(
+        decision, "COMMIT", reason, 1.0, agent_id, "crypto_commit", "crypto_commit_v1"
+    )
+    chain_hash = _chain.get_by_tx(tx_hash)["prev_hash"]
+    return CommitResult(
+        tx_hash=tx_hash, chain_hash=chain_hash, chain_depth=chain_idx,
+        input_hash=input_hash, timestamp=time.time(),
+    )
+
+
+def _run_mev(response: str, agent_id: str) -> MevResult:
+    result = detect_mev(response)
+    reason = "; ".join(f["type"] for f in result["findings"]) or "No patterns matched"
+    tx_hash, chain_idx, input_hash = _commit_to_chain(
+        response, result["verdict"], reason, result["confidence"], agent_id, "mev", "mev_compliance_v1"
+    )
+    return MevResult(
+        verdict=result["verdict"], confidence=result["confidence"],
+        findings=[CryptoFinding(**f) for f in result["findings"]],
+        tx_hash=tx_hash, chain_index=chain_idx, input_hash=input_hash, timestamp=time.time(),
+    )
+
+
+def _run_jailbreak_crypto(response: str, agent_id: str) -> JailbreakCryptoResult:
+    result = detect_jailbreak_crypto(response)
+    tx_hash, chain_idx, input_hash = _commit_to_chain(
+        response, result["verdict"], result["reason"], result["confidence"],
+        agent_id, "jailbreak_crypto", result["policy_version"],
+    )
+    return JailbreakCryptoResult(
+        verdict=result["verdict"], confidence=result["confidence"], reason=result["reason"],
+        findings=[CryptoFinding(type=f["type"], severity=f["severity"]) for f in result["findings"]],
+        tx_hash=tx_hash, chain_index=chain_idx, input_hash=input_hash,
+        policy_version=result["policy_version"],
+    )
+
+
+def _run_signal(response: str, agent_id: str) -> SignalResult:
+    result = detect_signal(response)
+    tx_hash, chain_idx, input_hash = _commit_to_chain(
+        response, result["verdict"], result["reason"], result["confidence"], agent_id, "signal", "semantic_drift_crypto_v1"
+    )
+    return SignalResult(
+        verdict=result["verdict"], confidence=result["confidence"], reason=result["reason"],
+        findings=[CryptoFinding(type=f["type"], severity=f["severity"]) for f in result["findings"]],
+        tx_hash=tx_hash, chain_index=chain_idx, input_hash=input_hash, timestamp=time.time(),
+    )
+
+
+def _run_trade(response: str, agent_id: str) -> TradeResult:
+    result = detect_trade(response)
+    tx_hash, chain_idx, input_hash = _commit_to_chain(
+        response, result["verdict"], result["reason"], result["confidence"], agent_id, "trade", "trade_verifier_v1"
+    )
+    chain_hash = _chain.get_by_tx(tx_hash)["prev_hash"]
+    return TradeResult(
+        verdict=result["verdict"], confidence=result["confidence"], reason=result["reason"],
+        findings=[CryptoFinding(type=f["type"], severity=f["severity"]) for f in result["findings"]],
+        trade_receipt=TradeReceipt(tx_hash=tx_hash, chain_hash=chain_hash, chain_depth=chain_idx),
+        input_hash=input_hash, timestamp=time.time(),
+    )
+
+
+def _run_wallet(response: str, agent_id: str) -> WalletResult:
+    result = detect_wallet(response)
+    tx_hash, chain_idx, input_hash = _commit_to_chain(
+        response, result["verdict"], result["reason"], result["confidence"], agent_id, "wallet", "wallet_guardian_v1"
+    )
+    return WalletResult(
+        verdict=result["verdict"], confidence=result["confidence"], reason=result["reason"],
+        findings=[WalletFinding(**f) for f in result["findings"]],
+        sanitized_output=result["sanitized_output"], risk_score=result["risk_score"],
+        tx_hash=tx_hash, chain_index=chain_idx, input_hash=input_hash,
+        policy_version="wallet_guardian_v1", timestamp=time.time(),
     )
 
 
@@ -380,6 +568,82 @@ def dcl_audit_decode_deep(
         chain_integrity=intact, tampered_at_index=tampered_at, drift_context=entry["drift_context"],
         seal_text=seal["seal_text"], verify_url=seal["verify_url"],
     )
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# DCL CRYPTO SUITE — implements the 6 tools documented (but not yet wired up) in
+# Fronesis-Labs/dcl-skills' skills/crypto/*/references/mcp-tools.md. Same
+# pattern as the tools above: @mcp.tool + @price + a typed pydantic return.
+# Suggested pipeline order: firewall -> wallet -> trade -> mev -> commit (last).
+# ════════════════════════════════════════════════════════════════════════════════
+@mcp.tool(title="Crypto Jailbreak & Injection Detection", annotations=_WRITE_ANNOTATIONS)
+@price(price=0.02, currency="USD")
+def dcl_evaluate_jailbreak_crypto(
+    response: Annotated[str, Field(description="The incoming prompt or agent response to screen for crypto-specialized jailbreak/injection attempts.")],
+    agent_id: Annotated[str, Field(description="Identifier of the agent that produced or received the text.")],
+    ctx: Context,
+) -> JailbreakCryptoResult:
+    """PRE-ACTION Crypto Jailbreak & Injection Detection ($0.02). Crypto-specialized instruction-override/jailbreak/injection screen: standard role-switch and instruction-override patterns, plus crypto-specific drain-wallet injection (e.g. "transfer all funds to...", fake "test transaction" requesting full balance) and unlimited-approval injection (e.g. type(uint256).max, "approve unlimited allowance", skip-slippage-confirmation framing). Any match returns NO_COMMIT with `reason` and `findings` naming the matched category/categories; run this FIRST in the DCL crypto pipeline, before wallet/trade/MEV checks, since it screens the input itself rather than a decision built on top of it."""
+    return _run_jailbreak_crypto(response, agent_id)
+
+
+@mcp.tool(title="Wallet Secret Guardian", annotations=_WRITE_ANNOTATIONS)
+@price(price=0.02, currency="USD")
+def dcl_evaluate_wallet(
+    response: Annotated[str, Field(description="The text to scan for seed phrases, private keys, wallet addresses, and wallet-context API credentials.")],
+    agent_id: Annotated[str, Field(description="Identifier of the agent that produced the response.")],
+    ctx: Context,
+) -> WalletResult:
+    """POST-ACTION Wallet Secret Guardian ($0.02). Scans for BIP-39 seed phrases (12 or 24 consecutive wordlist words), raw hex or WIF-format private keys, Ethereum/Bitcoin wallet addresses, and API keys/bearer tokens appearing near wallet/custody/signing terminology. Any finding results in NO_COMMIT — wallet secrets have no safe threshold, unlike other DCL evaluators. Returns a `sanitized_output` with all matches redacted (null if nothing was found) and a masked `redacted_sample` per finding — the real value is never returned or stored server-side."""
+    return _run_wallet(response, agent_id)
+
+
+@mcp.tool(title="Trade Decision Verifier", annotations=_WRITE_ANNOTATIONS)
+@price(price=0.02, currency="USD")
+def dcl_evaluate_trade(
+    response: Annotated[str, Field(description="The trade decision or recommendation text to screen.")],
+    agent_id: Annotated[str, Field(description="Identifier of the agent that produced the response.")],
+    ctx: Context,
+) -> TradeResult:
+    """PRE-ACTION Trade Decision Verifier ($0.02). Screens trade-decision language for guaranteed-return claims, zero-risk/"can't lose" framing, and unqualified "buy/sell X now" directives — any match is NO_COMMIT. If no unsafe language is found, COMMIT additionally requires the word "risk" to appear anywhere in the text as a minimum disclosure marker; its absence alone triggers NO_COMMIT with `reason` noting the missing disclosure. Produces an immutable `trade_receipt` (tx_hash/chain_hash/chain_depth) distinct from the top-level audit hash, for downstream systems that specifically need a trade-shaped receipt object."""
+    return _run_trade(response, agent_id)
+
+
+@mcp.tool(title="MEV & Market-Abuse Compliance Screen", annotations=_WRITE_ANNOTATIONS)
+@price(price=0.03, currency="USD")
+def dcl_evaluate_mev(
+    response: Annotated[str, Field(description="The agent or LLM response text describing or proposing an on-chain/trading action, to screen for MEV and market-abuse language.")],
+    agent_id: Annotated[str, Field(description="Identifier of the agent that produced the response.")],
+    ctx: Context,
+) -> MevResult:
+    """POST-ACTION MEV & Market-Abuse Compliance Screen ($0.03). Text-level screen (not a mempool/transaction analyzer) for front-running/sandwich-attack language, wash trading/layering/spoofing, KYC/AML red flags (mixers, structuring, obscuring fund origin), and pump-and-dump/rug-pull language. Any critical-severity finding, or two or more major-severity findings, returns NO_COMMIT; a single major-severity finding is also returned as NO_COMMIT but with a distinctly higher `confidence` (~0.55 vs ~0.05-0.2 for harder violations) so downstream callers can tell a soft single flag apart from a hard multi-finding block. Each finding includes an illustrative `regulatory_reference` tag (MiFID II, FCA, or an EU AI Act article)."""
+    return _run_mev(response, agent_id)
+
+
+@mcp.tool(title="Market Signal Fabrication Screen", annotations=_WRITE_ANNOTATIONS)
+@price(price=0.03, currency="USD")
+def dcl_evaluate_signal(
+    response: Annotated[str, Field(description="The market signal, analysis, or price-prediction text to screen.")],
+    agent_id: Annotated[str, Field(description="Identifier of the agent that produced the response.")],
+    ctx: Context,
+) -> SignalResult:
+    """POST-ACTION Market Signal Fabrication Screen ($0.03). Pattern-based heuristic on the output text alone (no source price feed) — flags guaranteed-price-prediction language ("will definitely hit $X"), absolute-certainty claims ("100% certain", "cannot go down"), a fabricated-price flag when a specific dollar figure co-occurs with a guaranteed-outcome claim, and an invented-token flag when a "$TICKER" cashtag doesn't match a small set of well-known symbols (false positives are possible for legitimate lesser-known tickers — this is a heuristic pre-check, not ground truth). For a full claim-by-claim check against an actual price-feed snapshot, use the local grounding workflow instead of this live tool. Verdict/confidence collapsing follows the same rule as dcl_evaluate_mev: any critical finding or 2+ major findings is a hard NO_COMMIT; exactly one major finding is a softer NO_COMMIT at ~0.55 confidence."""
+    return _run_signal(response, agent_id)
+
+
+@mcp.tool(title="Leibniz Layer Crypto Commit", annotations=_WRITE_ANNOTATIONS)
+@price(price=0.01, currency="USD")
+def dcl_commit(
+    decision: Annotated[str, Field(description="The final trading/agent decision text to commit to the audit chain.")],
+    agent_id: Annotated[str, Field(description="Identifier of the agent whose decision is being committed.")],
+    ctx: Context,
+    prior_checks: Annotated[
+        Optional[dict],
+        Field(description="Optional dict of tx_hashes from earlier pipeline steps (e.g. {'prompt_firewall_tx_hash': ..., 'trade_verifier_tx_hash': ..., 'mev_compliance_tx_hash': ...}), linking this commit to the specific checks that passed before it."),
+    ] = None,
+) -> CommitResult:
+    """FINAL-STEP Leibniz Layer Crypto Commit ($0.01). Writes a trading/agent decision to the append-only Leibniz Layer audit chain and returns a Merkle-proof-style receipt: `tx_hash` (proof of this specific commit), `chain_hash` (the previous commit's hash, linking this one into the chain), and `chain_depth` (this commit's position in the chain). Unlike the evaluate_* tools, this call has no pass/fail verdict of its own — it always succeeds and simply seals the decision. Passing `prior_checks` is optional but recommended: it records which earlier pipeline steps (firewall/wallet/trade/MEV) this specific commit is downstream of, in one auditable record. Always run this LAST, after every other crypto-suite check has passed."""
+    return _run_commit(decision, agent_id, prior_checks)
 
 
 if __name__ == "__main__":
