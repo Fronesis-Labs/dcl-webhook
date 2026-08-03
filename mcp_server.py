@@ -25,6 +25,7 @@ from dcl_core import (
 )
 from dcl_crypto import (
     detect_wallet, detect_jailbreak_crypto, detect_mev, detect_trade, detect_signal,
+    detect_output_sanitizer,
 )
 
 from paymcp import PayMCP, Mode, price
@@ -49,7 +50,7 @@ mcp = FastMCP(
         allowed_origins=["https://mcp.fronesislabs.com", "http://localhost:8081"],
     ),
 )
-mcp._mcp_server.version = "2.2.0"
+mcp._mcp_server.version = "2.3.0"
 
 # ════════════════════════════════════════════════════════════════════════════════
 # Payments — PayMCP / x402 (mirrors pricing in webhook_server.py)
@@ -260,6 +261,28 @@ class WalletResult(BaseModel):
     timestamp: float = Field(description="Unix timestamp when this record was sealed.")
 
 
+class SanitizerFinding(BaseModel):
+    type: str = Field(description="e.g. api_key, email, seed_phrase, internal_ip, mac_address, internal_hostname, self_harm_instruction, targeted_harassment, shell_injection, sql_injection, path_traversal, and others.")
+    position: int = Field(description="Character offset of the match in the submitted text.")
+    redacted_sample: str = Field(description="Masked version of the match — never the real value.")
+    severity: str = Field(description="critical, major, or minor.")
+    category: str = Field(description="secrets, pii, crypto, network, toxic, or unsafe_instructions.")
+
+
+class OutputSanitizerResult(BaseModel):
+    verdict: str = Field(description="COMMIT if the response was clean, otherwise NO_COMMIT.")
+    confidence: float = Field(description="Confidence score of the verdict, from 0.0 to 1.0.")
+    violations: List[str] = Field(description="Distinct finding types matched (e.g. ['api_key', 'internal_ip']). Empty list if verdict is COMMIT.")
+    findings: List[SanitizerFinding] = Field(description="All matches found, with position/severity/category detail. Empty list if verdict is COMMIT.")
+    sanitized_output: Optional[str] = Field(default=None, description="Input text with every match replaced by [REDACTED]. Null if verdict is COMMIT.")
+    redaction_count: int = Field(description="Total number of items redacted.")
+    risk_score: float = Field(description="0.0-1.0 composite severity score.")
+    tx_hash: str = Field(description="Hash of this record in the tamper-evident audit chain.")
+    chain_index: int = Field(description="Sequential index of this record in the audit chain.")
+    input_hash: str = Field(description="Hash of the sanitized text (raw content is never stored).")
+    timestamp: float = Field(description="Unix timestamp when this record was sealed.")
+
+
 def _run_evaluation(response: str, policy: str, agent_id: str, task_type: str) -> EvaluateResult:
     policy_yaml = BUILTIN_POLICIES.get(policy, policy or BUILTIN_POLICIES["default"])
     verdict, confidence, reason, policy_version = evaluate_policy(response, policy_yaml)
@@ -403,6 +426,21 @@ def _run_wallet(response: str, agent_id: str) -> WalletResult:
         sanitized_output=result["sanitized_output"], risk_score=result["risk_score"],
         tx_hash=tx_hash, chain_index=chain_idx, input_hash=input_hash,
         policy_version="wallet_guardian_v1", timestamp=time.time(),
+    )
+
+
+def _run_output_sanitizer(response: str, agent_id: str) -> OutputSanitizerResult:
+    result = detect_output_sanitizer(response)
+    reason = "; ".join(result["violations"]) or "No sensitive content detected"
+    tx_hash, chain_idx, input_hash = _commit_to_chain(
+        response, result["verdict"], reason, result["confidence"], agent_id, "output_sanitizer", "output_sanitizer_v1"
+    )
+    return OutputSanitizerResult(
+        verdict=result["verdict"], confidence=result["confidence"], violations=result["violations"],
+        findings=[SanitizerFinding(**f) for f in result["findings"]],
+        sanitized_output=result["sanitized_output"], redaction_count=result["redaction_count"],
+        risk_score=result["risk_score"], tx_hash=tx_hash, chain_index=chain_idx,
+        input_hash=input_hash, timestamp=time.time(),
     )
 
 
@@ -629,6 +667,17 @@ def dcl_evaluate_signal(
 ) -> SignalResult:
     """POST-ACTION Market Signal Fabrication Screen ($0.03). Pattern-based heuristic on the output text alone (no source price feed) — flags guaranteed-price-prediction language ("will definitely hit $X"), absolute-certainty claims ("100% certain", "cannot go down"), a fabricated-price flag when a specific dollar figure co-occurs with a guaranteed-outcome claim, and an invented-token flag when a "$TICKER" cashtag doesn't match a small set of well-known symbols (false positives are possible for legitimate lesser-known tickers — this is a heuristic pre-check, not ground truth). For a full claim-by-claim check against an actual price-feed snapshot, use the local grounding workflow instead of this live tool. Verdict/confidence collapsing follows the same rule as dcl_evaluate_mev: any critical finding or 2+ major findings is a hard NO_COMMIT; exactly one major finding is a softer NO_COMMIT at ~0.55 confidence."""
     return _run_signal(response, agent_id)
+
+
+@mcp.tool(title="Output Sanitizer — Final Gate", annotations=_WRITE_ANNOTATIONS)
+@price(price=0.02, currency="USD")
+def dcl_evaluate_output_sanitizer(
+    response: Annotated[str, Field(description="The raw LLM/agent response to sanitize before it is delivered to a user, downstream agent, or external system.")],
+    agent_id: Annotated[str, Field(description="Identifier of the agent that produced the response.")],
+    ctx: Context,
+) -> OutputSanitizerResult:
+    """FINAL-GATE Output Sanitizer ($0.02). Post-processing checkpoint that strips secrets/credentials, PII, crypto material (seed phrases, private keys, wallet addresses), internal network details (private IPs, MAC addresses, .internal/.local/.corp hostnames), and unsafe shell/SQL/path-traversal fragments from a raw model response — plus a narrow, high-precision safety net for direct self-harm-instruction-seeking and targeted-harassment phrasing (not a general toxicity classifier). Returns a single `sanitized_output` with every match replaced by `[REDACTED]`; use that instead of the original whenever verdict is NO_COMMIT. Run this as the LAST gate before a response reaches its destination — after `dcl_evaluate_jailbreak_crypto`/other input-side checks have already run, and immediately before `dcl_commit` seals the final decision. Internally re-uses the same detection tables as `dcl_evaluate_secrets`/`dcl_evaluate_pii` for the secrets/PII categories, so results stay consistent with those tools."""
+    return _run_output_sanitizer(response, agent_id)
 
 
 @mcp.tool(title="Leibniz Layer Crypto Commit", annotations=_WRITE_ANNOTATIONS)

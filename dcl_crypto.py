@@ -26,6 +26,8 @@ apart from a hard multi-finding block if they inspect confidence/reason.
 import re
 from typing import List, Optional, Tuple
 
+from dcl_core import SECRET_PATTERNS, PII_PATTERNS, _luhn_valid, _SECRET_SEVERITY
+
 
 def _redact(s: str, keep_start: int = 2, keep_end: int = 4) -> str:
     """Mask a matched string, keeping only a few edge chars. Mirrors dcl_core._redact."""
@@ -333,11 +335,22 @@ def _find_wallet_api_credentials(text: str) -> List[dict]:
     return findings
 
 
+_SEVERITY_RANK = {"critical": 3, "major": 2, "minor": 1}
+
+
 def _dedupe_by_span(findings: List[dict]) -> List[dict]:
     """Drop findings whose match span is fully contained in an earlier, already-kept one
-    (e.g. a private-key hex run also matching inside a longer seed-phrase-shaped window)."""
+    (e.g. a private-key hex run also matching inside a longer seed-phrase-shaped window).
+    When two findings share the exact same span (e.g. a private IP matching both the
+    generic PII "any IPv4" pattern and the more specific "internal_ip" pattern), the
+    higher-severity / more specific one wins, not just whichever was scanned first."""
     kept = []
-    for f in sorted(findings, key=lambda f: (f["position"], -(f.get("end_position", f["position"])))):
+    ordering_key = lambda f: (
+        f["position"],
+        -(f.get("end_position", f["position"])),
+        -_SEVERITY_RANK.get(f.get("severity"), 0),
+    )
+    for f in sorted(findings, key=ordering_key):
         span = (f["position"], f.get("end_position", f["position"]))
         if any(span[0] >= k[0] and span[1] <= k[1] for k in [(k["position"], k.get("end_position", k["position"])) for k in kept]):
             continue
@@ -706,4 +719,209 @@ def detect_signal(text: str) -> dict:
         "confidence": round(confidence, 3),
         "reason": reason,
         "findings": findings,
+    }
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# DCL Output Sanitizer (dcl_evaluate_output_sanitizer) — final-gate post-processing
+# checkpoint. Combines the existing secrets/PII detectors, the crypto-address/
+# seed-phrase/private-key detectors from the wallet guardian above, and three
+# new categories (network, toxic, unsafe_instructions) into one pass, then
+# produces a single sanitized_output with every match redacted.
+#
+# secrets/PII re-scan the same SECRET_PATTERNS/PII_PATTERNS tables dcl_core.py's
+# detect_secrets/detect_pii already use (imported, not duplicated) — but capture
+# exact match spans here, since detect_secrets/detect_pii only return a start
+# offset, and this tool needs start+end to build sanitized_output.
+#
+# toxic is intentionally narrow: two unambiguous, high-precision phrase classes
+# (self-harm instruction-seeking, direct targeted-harassment) rather than a
+# general toxicity classifier — regex is the wrong tool for broad toxicity
+# detection, and a wide net here would just produce noisy false positives. This
+# is a last-resort safety net, not a moderation system.
+# ════════════════════════════════════════════════════════════════════════════════
+
+def _scan_secrets_spans(text: str) -> List[dict]:
+    findings = []
+    for cat, typ, provider, pattern in SECRET_PATTERNS:
+        for m in pattern.finditer(text):
+            findings.append({
+                "type": typ, "position": m.start(), "end_position": m.end(),
+                "redacted_sample": _redact(m.group(0)), "severity": _SECRET_SEVERITY[cat],
+                "category": "secrets",
+            })
+    return findings
+
+
+def _scan_pii_spans(text: str) -> List[dict]:
+    findings = []
+    for cat, typ, pattern, severity in PII_PATTERNS:
+        for m in pattern.finditer(text):
+            match_str = m.group(0)
+            if typ == "bank_card":
+                digits = re.sub(r"[ -]", "", match_str)
+                if not (13 <= len(digits) <= 19) or not _luhn_valid(digits):
+                    continue
+            findings.append({
+                "type": typ, "position": m.start(), "end_position": m.end(),
+                "redacted_sample": _redact(match_str), "severity": severity,
+                "category": "pii",
+            })
+    return findings
+
+
+def _scan_crypto_spans(text: str) -> List[dict]:
+    """Reuses the wallet-guardian's seed-phrase/private-key/wallet-address
+    detectors (defined above), tagged under the "crypto" category here."""
+    findings = _find_seed_phrases(text) + _find_private_keys(text) + _find_wallet_addresses(text)
+    for f in findings:
+        f["category"] = "crypto"
+    return findings
+
+
+_INTERNAL_IP_PATTERNS = [
+    re.compile(r"\b10\.(?:\d{1,3}\.){2}\d{1,3}\b"),
+    re.compile(r"\b172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}\b"),
+    re.compile(r"\b192\.168\.\d{1,3}\.\d{1,3}\b"),
+    re.compile(r"\b127\.\d{1,3}\.\d{1,3}\.\d{1,3}\b"),
+    re.compile(r"\b169\.254\.\d{1,3}\.\d{1,3}\b"),
+]
+_MAC_ADDRESS_PATTERN = re.compile(r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b")
+_INTERNAL_HOSTNAME_PATTERN = re.compile(r"(?i)\b[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.(?:internal|local|corp|lan)\b")
+
+
+def _find_network(text: str) -> List[dict]:
+    """Internal/private IPv4 ranges, MAC addresses, and .internal/.local/.corp/.lan hostnames."""
+    findings = []
+    for pattern in _INTERNAL_IP_PATTERNS:
+        for m in pattern.finditer(text):
+            findings.append({
+                "type": "internal_ip", "position": m.start(), "end_position": m.end(),
+                "redacted_sample": _redact(m.group(0)), "severity": "major", "category": "network",
+            })
+    for m in _MAC_ADDRESS_PATTERN.finditer(text):
+        findings.append({
+            "type": "mac_address", "position": m.start(), "end_position": m.end(),
+            "redacted_sample": _redact(m.group(0)), "severity": "minor", "category": "network",
+        })
+    for m in _INTERNAL_HOSTNAME_PATTERN.finditer(text):
+        findings.append({
+            "type": "internal_hostname", "position": m.start(), "end_position": m.end(),
+            "redacted_sample": _redact(m.group(0)), "severity": "major", "category": "network",
+        })
+    return findings
+
+
+_SELF_HARM_INSTRUCTION_PATTERNS = [
+    re.compile(r"(?i)\bhow to (?:kill yourself|end your life|commit suicide)\b"),
+    re.compile(r"(?i)\bways to (?:hurt|harm) yourself\b"),
+    re.compile(r"(?i)\bpainless (?:way|method)s? to die\b"),
+]
+_TARGETED_HARASSMENT_PATTERNS = [
+    re.compile(r"(?i)\byou should (?:kill yourself|die)\b"),
+    re.compile(r"(?i)\bi hope you die\b"),
+    re.compile(r"(?i)\bkys\b"),
+]
+
+
+def _find_toxic(text: str) -> List[dict]:
+    """Narrow, high-precision safety net: self-harm instruction-seeking and
+    direct targeted harassment only. Not a general toxicity classifier."""
+    findings = []
+    for pattern in _SELF_HARM_INSTRUCTION_PATTERNS:
+        for m in pattern.finditer(text):
+            findings.append({
+                "type": "self_harm_instruction", "position": m.start(), "end_position": m.end(),
+                "redacted_sample": _redact(m.group(0)), "severity": "critical", "category": "toxic",
+            })
+    for pattern in _TARGETED_HARASSMENT_PATTERNS:
+        for m in pattern.finditer(text):
+            findings.append({
+                "type": "targeted_harassment", "position": m.start(), "end_position": m.end(),
+                "redacted_sample": _redact(m.group(0)), "severity": "major", "category": "toxic",
+            })
+    return findings
+
+
+_SHELL_INJECTION_PATTERNS = [
+    re.compile(r"\brm\s+-rf\s+(?:/|~|\*)"),
+    re.compile(r"(?i)\b(?:curl|wget)\s+\S+\s*\|\s*(?:sudo\s+)?(?:ba)?sh\b"),
+    re.compile(r"(?i)\bbash\s+-i\s*>&\s*/dev/tcp/"),
+]
+_SQL_INJECTION_PATTERNS = [
+    re.compile(r"(?i)'\s*OR\s+'?1'?\s*=\s*'?1"),
+    re.compile(r"(?i)\bUNION\s+SELECT\b"),
+    re.compile(r"(?i);\s*DROP\s+TABLE\b"),
+]
+_PATH_TRAVERSAL_PATTERNS = [
+    re.compile(r"(?:\.\./){2,}"),
+    re.compile(r"(?:\.\.\\){2,}"),
+]
+
+
+def _find_unsafe_instructions(text: str) -> List[dict]:
+    """Shell-executable commands (incl. reverse shells), SQL injection
+    fragments, and path-traversal sequences."""
+    findings = []
+    for pattern in _SHELL_INJECTION_PATTERNS:
+        for m in pattern.finditer(text):
+            findings.append({
+                "type": "shell_injection", "position": m.start(), "end_position": m.end(),
+                "redacted_sample": _redact(m.group(0)), "severity": "critical", "category": "unsafe_instructions",
+            })
+    for pattern in _SQL_INJECTION_PATTERNS:
+        for m in pattern.finditer(text):
+            findings.append({
+                "type": "sql_injection", "position": m.start(), "end_position": m.end(),
+                "redacted_sample": _redact(m.group(0)), "severity": "major", "category": "unsafe_instructions",
+            })
+    for pattern in _PATH_TRAVERSAL_PATTERNS:
+        for m in pattern.finditer(text):
+            findings.append({
+                "type": "path_traversal", "position": m.start(), "end_position": m.end(),
+                "redacted_sample": _redact(m.group(0)), "severity": "major", "category": "unsafe_instructions",
+            })
+    return findings
+
+
+def detect_output_sanitizer(text: str) -> dict:
+    """Final-gate sweep: secrets, credentials, PII, crypto material, internal
+    network details, narrow toxic-content patterns, and unsafe shell/SQL/path
+    fragments — all in one pass, with a single redacted sanitized_output."""
+    findings = _dedupe_by_span(
+        _scan_secrets_spans(text)
+        + _scan_pii_spans(text)
+        + _scan_crypto_spans(text)
+        + _find_network(text)
+        + _find_toxic(text)
+        + _find_unsafe_instructions(text)
+    )
+
+    sanitized_output = None
+    if findings:
+        sanitized_output = text
+        for f in sorted(findings, key=lambda f: f["position"], reverse=True):
+            start, end = f["position"], f.get("end_position", f["position"])
+            sanitized_output = sanitized_output[:start] + "[REDACTED]" + sanitized_output[end:]
+
+    for f in findings:
+        f.pop("end_position", None)
+
+    violations = sorted({f["type"] for f in findings})
+    verdict = "NO_COMMIT" if findings else "COMMIT"
+    has_critical = any(f["severity"] == "critical" for f in findings)
+    risk_score = (
+        round(min(1.0, 0.3 + 0.08 * len(findings) + (0.3 if has_critical else 0.0)), 3)
+        if findings else 0.0
+    )
+    confidence = round(1.0 - risk_score, 3) if findings else 0.98
+
+    return {
+        "verdict": verdict,
+        "confidence": confidence,
+        "violations": violations,
+        "findings": findings,
+        "sanitized_output": sanitized_output,
+        "redaction_count": len(findings),
+        "risk_score": risk_score,
     }
