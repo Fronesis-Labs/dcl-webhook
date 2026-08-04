@@ -26,7 +26,7 @@ apart from a hard multi-finding block if they inspect confidence/reason.
 import re
 from typing import List, Optional, Tuple
 
-from dcl_core import SECRET_PATTERNS, PII_PATTERNS, _luhn_valid, _SECRET_SEVERITY
+from audit_logic import SECRET_PATTERNS, PII_PATTERNS, _luhn_valid, _SECRET_SEVERITY
 
 
 def _redact(s: str, keep_start: int = 2, keep_end: int = 4) -> str:
