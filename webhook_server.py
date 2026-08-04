@@ -234,7 +234,6 @@ def _process_scan(req: ScanRequest, detector, policy_label: str) -> ScanResponse
 # ════════════════════════════════════════════════════════════════════════════════
 # PRE-ACTION & POST-ACTION ROUTES (with rate limits)
 # ════════════════════════════════════════════════════════════════════════════════
-
 @app.post("/evaluate/fast", response_model=EvaluateResponse)
 @limiter.limit("100/minute")
 @pay("$0.01")
@@ -348,7 +347,6 @@ async def audit_decode_deep(request: Request, tx_hash: str):
 # ════════════════════════════════════════════════════════════════════════════════
 # Utility Routes (no rate limits)
 # ════════════════════════════════════════════════════════════════════════════════
-
 @app.get("/")
 def root():
     return {"service": "DCL Evaluator Webhook API (x402)", "version": "2.2.0", "by": "Fronesis Labs"}

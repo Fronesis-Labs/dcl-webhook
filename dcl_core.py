@@ -1,19 +1,21 @@
 """
-DCL Webhook — policy evaluation, drift detection, and PII/secret scanning.
-
-Closed module: the chain/consensus protocol layer now lives in the
-published dcl-core package (pip install dcl-core). This file holds
-everything that stays proprietary — policy scoring, drift detection,
-and the secret/PII detectors — and is imported by both webhook_server.py
-and mcp_server.py, same as dcl_core.py used to be before the split.
+DCL Core — clean policy evaluation and tamper-evident chain logic.
+Used by both webhook_server.py (REST+payments) and mcp_server.py (MCP).
 """
-
+import hashlib
 import math
-import re
-from datetime import datetime, timezone
-from typing import Tuple
+import time
+import uuid
+import sqlite3
+import json
+from typing import Optional, Tuple
 
-from dcl_core import sha256hex
+
+def sha256hex(s: str) -> str:
+    return hashlib.sha256(s.encode()).hexdigest()
+
+
+from datetime import datetime, timezone
 
 
 def format_seal(tx_hash: str, input_hash: str, timestamp: float) -> dict:
@@ -30,6 +32,78 @@ def format_seal(tx_hash: str, input_hash: str, timestamp: float) -> dict:
         f"Verify: {verify_url}"
     )
     return {"seal_text": seal_text, "verify_url": verify_url}
+
+
+class ChainState:
+    """SQLite-backed tamper-evident chain. Stores METADATA ONLY."""
+    GENESIS = "0" * 64
+
+    def __init__(self, db_path: str = "dcl_chain.db"):
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS chain (
+                idx INTEGER PRIMARY KEY,
+                tx_hash TEXT UNIQUE NOT NULL,
+                prev_hash TEXT NOT NULL,
+                verdict TEXT NOT NULL,
+                input_hash TEXT NOT NULL,
+                policy_hash TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                task_type TEXT NOT NULL,
+                timestamp REAL NOT NULL,
+                drift_context TEXT NOT NULL
+            )
+        """)
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tx_hash ON chain(tx_hash)")
+        self._conn.commit()
+
+    def append(self, verdict: str, input_hash: str, policy_hash: str,
+               agent_id: str, reason: str, confidence: float, task_type: str) -> Tuple[str, int]:
+        last = self._conn.execute("SELECT tx_hash FROM chain ORDER BY idx DESC LIMIT 1").fetchone()
+        prev_hash = last[0] if last else self.GENESIS
+        new_idx = self._conn.execute("SELECT COALESCE(MAX(idx), -1) + 1 FROM chain").fetchone()[0]
+
+        content = f"{new_idx}:{verdict}:{input_hash}:{policy_hash}:{prev_hash}:{time.time()}"
+        tx_hash = "0x" + sha256hex(content)[:32]
+        drift_context = {"environment": "production-edge", "policy_version_hash": policy_hash}
+
+        self._conn.execute("""
+            INSERT INTO chain (idx, tx_hash, prev_hash, verdict, input_hash, policy_hash,
+                             agent_id, reason, confidence, task_type, timestamp, drift_context)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (new_idx, tx_hash, prev_hash, verdict, input_hash, policy_hash,
+              agent_id, reason, confidence, task_type, time.time(), json.dumps(drift_context)))
+        self._conn.commit()
+        return tx_hash, new_idx
+
+    def get_by_tx(self, tx_hash: str) -> Optional[dict]:
+        row = self._conn.execute("""
+            SELECT idx, tx_hash, prev_hash, verdict, input_hash, policy_hash,
+                   agent_id, reason, confidence, task_type, timestamp, drift_context
+            FROM chain WHERE tx_hash = ?
+        """, (tx_hash,)).fetchone()
+        if not row:
+            return None
+        return {
+            "index": row[0], "tx_hash": row[1], "prev_hash": row[2], "verdict": row[3],
+            "input_hash": row[4], "policy_hash": row[5], "agent_id": row[6], "reason": row[7],
+            "confidence": row[8], "task_type": row[9], "timestamp": row[10],
+            "drift_context": json.loads(row[11])
+        }
+
+    def verify(self) -> Tuple[bool, Optional[int]]:
+        rows = self._conn.execute("SELECT idx, prev_hash, tx_hash FROM chain ORDER BY idx").fetchall()
+        for i, row in enumerate(rows):
+            expected_prev = rows[i - 1][2] if i > 0 else self.GENESIS
+            if row[1] != expected_prev:
+                return False, row[0]
+        return True, None
+
+    def __len__(self):
+        return self._conn.execute("SELECT COUNT(*) FROM chain").fetchone()[0]
 
 
 BUILTIN_POLICIES = {
@@ -56,6 +130,22 @@ forbidden_patterns:
   - "pretend you are"
   - "act as if"
   - "DAN"
+required_patterns: []
+""",
+    "strict": """
+version: "1.0.0"
+name: "Strict Policy"
+thresholds:
+  min_confidence: 0.85
+forbidden_patterns:
+  - "ignore previous instructions"
+  - "jailbreak"
+  - "bypass safety"
+  - "pretend you are"
+  - "act as if"
+  - "DAN"
+  - "I cannot be held responsible"
+  - "no guarantees"
 required_patterns: []
 """,
     "safety": """
@@ -87,22 +177,6 @@ forbidden_patterns:
   - "as an ai, i can confirm"
   - "i am certain"
   - "without a doubt"
-required_patterns: []
-""",
-    "strict": """
-version: "1.0.0"
-name: "Strict Policy"
-thresholds:
-  min_confidence: 0.85
-forbidden_patterns:
-  - "ignore previous instructions"
-  - "jailbreak"
-  - "bypass safety"
-  - "pretend you are"
-  - "act as if"
-  - "DAN"
-  - "I cannot be held responsible"
-  - "no guarantees"
 required_patterns: []
 """,
 }
@@ -139,6 +213,9 @@ def evaluate_policy(response: str, policy_yaml: str) -> Tuple[str, float, str, s
         reason = "; ".join(reasons) if reasons else f"Confidence {confidence} below threshold {min_conf}"
 
     return verdict, round(confidence, 3), reason, version
+
+
+import re
 
 
 def _redact(s: str, keep_start: int = 2, keep_end: int = 4) -> str:
