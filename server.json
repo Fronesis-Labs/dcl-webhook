@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
   "name": "com.fronesislabs/dcl-trust-oracle",
-  "description": "Deterministic AI audit layer for gating and forensically reviewing LLM/agent outputs. Pre- and post-action policy checks (jailbreak, quality, safety, secrets/PII, crypto-agent risk: wallet, trade, MEV, signal), tamper-evident hash-chained audit log, x402 micropayments (USDC on Base) per call.",
+  "description": "Deterministic AI audit layer for LLM/agent outputs: policy checks, tamper-evident log, x402.",
   "version": "2.3.0",
   "repository": {
     "url": "https://github.com/Fronesis-Labs/dcl-webhook",
