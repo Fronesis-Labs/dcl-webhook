@@ -7,4 +7,4 @@ httpx>=0.24.0
 fastapi-x402>=0.1.8
 slowapi>=0.1.9
 paymcp @ git+https://github.com/Fronesis-Labs/paymcp.git@bd69607
-dcl-core @ git+https://github.com/Fronesis-Labs/dcl-core.git@v0.1.0
+dcl-core @ git+https://github.com/Fronesis-Labs/dcl-core.git@v0.1.1
