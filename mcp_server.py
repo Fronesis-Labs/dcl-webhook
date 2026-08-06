@@ -80,7 +80,7 @@ PayMCP(
     ],
     # AUTO: uses x402 for clients that support automatic on-chain payment,
     # falls back to a compatible guided flow for clients that don't.
-    mode=Mode.AUTO,
+    mode=Mode.X402,
 )
 
 _chain = ChainState(os.environ.get("DCL_DB_PATH", "dcl_chain.db"))
