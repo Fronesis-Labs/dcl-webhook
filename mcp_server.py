@@ -16,6 +16,8 @@ import os
 import json
 import time
 import uuid
+from collections import defaultdict
+from functools import wraps
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -451,9 +453,70 @@ _READ_ANNOTATIONS = ToolAnnotations(
 )
 
 # ════════════════════════════════════════════════════════════════════════════════
+# Rate limiting — the REST API in webhook_server.py already has slowapi; these
+# MCP tools had no limiter at all, which combined with dcl_evaluate_batch's
+# unbounded item count is a cost/resource-exhaustion vector even behind x402
+# (an attacker willing to pay per call could still hammer the server). Keyed by
+# client IP from the underlying Starlette request (honoring X-Forwarded-For,
+# since nginx proxies mcp.fronesislabs.com), falling back to agent_id for
+# transports without an HTTP request (e.g. stdio). Simple in-memory sliding
+# window — sufficient for a single PM2 process; swap for Redis if this ever
+# scales to multiple workers.
+# ════════════════════════════════════════════════════════════════════════════════
+_RATE_LIMIT_WINDOW_SECONDS = 60
+_RATE_LIMIT_MAX_CALLS = 30
+_MAX_BATCH_ITEMS = 200
+_rate_limit_hits: dict[str, list[float]] = defaultdict(list)
+
+
+def _rate_limit_key(ctx: "Context | None", agent_id: str | None) -> str:
+    if ctx is not None:
+        try:
+            request = ctx.request_context.request
+            if request is not None:
+                forwarded = request.headers.get("x-forwarded-for")
+                if forwarded:
+                    return forwarded.split(",")[0].strip()
+                if request.client:
+                    return request.client.host
+        except Exception:
+            pass
+    return f"agent:{agent_id}" if agent_id else "unknown"
+
+
+def _rate_limited(fn):
+    """Reject a call before payment is collected if the caller is over the
+    per-window limit. Applied above @price so a rate-limited call never gets
+    charged."""
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        ctx = kwargs.get("ctx")
+        if ctx is None:
+            for a in args:
+                if isinstance(a, Context):
+                    ctx = a
+                    break
+        key = _rate_limit_key(ctx, kwargs.get("agent_id"))
+        now = time.time()
+        hits = _rate_limit_hits[key]
+        cutoff = now - _RATE_LIMIT_WINDOW_SECONDS
+        while hits and hits[0] < cutoff:
+            hits.pop(0)
+        if len(hits) >= _RATE_LIMIT_MAX_CALLS:
+            raise ValueError(
+                f"Rate limit exceeded: max {_RATE_LIMIT_MAX_CALLS} calls per "
+                f"{_RATE_LIMIT_WINDOW_SECONDS}s per client. Try again shortly."
+            )
+        hits.append(now)
+        return fn(*args, **kwargs)
+    return wrapper
+
+
+# ════════════════════════════════════════════════════════════════════════════════
 # PAID TOOLS — pricing mirrors webhook_server.py exactly
 # ════════════════════════════════════════════════════════════════════════════════
 @mcp.tool(title="Fast Pre-Action Audit", annotations=_WRITE_ANNOTATIONS)
+@_rate_limited
 @price(price=0.01, currency="USD")
 def dcl_evaluate_fast(
     response: Annotated[str, Field(description="The agent or LLM response text to audit.")],
@@ -465,6 +528,7 @@ def dcl_evaluate_fast(
 
 
 @mcp.tool(title="Strict Pre-Action Audit", annotations=_WRITE_ANNOTATIONS)
+@_rate_limited
 @price(price=0.05, currency="USD")
 def dcl_evaluate_strict(
     response: Annotated[str, Field(description="The agent or LLM response text to audit.")],
@@ -476,6 +540,7 @@ def dcl_evaluate_strict(
 
 
 @mcp.tool(title="Jailbreak Detection Check", annotations=_WRITE_ANNOTATIONS)
+@_rate_limited
 @price(price=0.02, currency="USD")
 def dcl_evaluate_jailbreak(
     response: Annotated[str, Field(description="The agent or LLM response text to check for jailbreak attempts.")],
@@ -487,6 +552,7 @@ def dcl_evaluate_jailbreak(
 
 
 @mcp.tool(title="Baseline Safety Check", annotations=_WRITE_ANNOTATIONS)
+@_rate_limited
 @price(price=0.01, currency="USD")
 def dcl_evaluate_safety(
     response: Annotated[str, Field(description="The agent or LLM response text to check for safety violations.")],
@@ -498,6 +564,7 @@ def dcl_evaluate_safety(
 
 
 @mcp.tool(title="Content Quality & Drift Check", annotations=_WRITE_ANNOTATIONS)
+@_rate_limited
 @price(price=0.03, currency="USD")
 def dcl_evaluate_quality(
     response: Annotated[str, Field(description="The agent or LLM response text to check for quality and drift.")],
@@ -509,6 +576,7 @@ def dcl_evaluate_quality(
 
 
 @mcp.tool(title="Secret & Credential Leak Scan", annotations=_WRITE_ANNOTATIONS)
+@_rate_limited
 @price(price=0.02, currency="USD")
 def dcl_evaluate_secrets(
     response: Annotated[str, Field(description="The text to scan for exposed API keys, tokens, private keys, DB URLs, and other credentials.")],
@@ -520,6 +588,7 @@ def dcl_evaluate_secrets(
 
 
 @mcp.tool(title="PII Detection Scan", annotations=_WRITE_ANNOTATIONS)
+@_rate_limited
 @price(price=0.02, currency="USD")
 def dcl_evaluate_pii(
     response: Annotated[str, Field(description="The text to scan for personal data: emails, phone numbers, national IDs, bank cards, IBANs, crypto addresses, IP addresses, passport numbers.")],
@@ -531,6 +600,7 @@ def dcl_evaluate_pii(
 
 
 @mcp.tool(title="Batch Evaluation", annotations=_WRITE_ANNOTATIONS)
+@_rate_limited
 @price(price=0.10, currency="USD")
 def dcl_evaluate_batch(
     items: Annotated[
@@ -540,7 +610,9 @@ def dcl_evaluate_batch(
     agent_id: Annotated[str, Field(description="Identifier of the agent that produced the responses.")],
     ctx: Context,
 ) -> BatchResult:
-    """PRE-ACTION Bulk Processing ($0.10). Evaluates a list of items in one call; each item is a dict shaped {"response": str, "policy"?: str}, where policy defaults to "default" if omitted and may be any built-in policy name (default, strict, anti_jailbreak, safety, content_quality). Each item gets its own independent COMMIT/NO_COMMIT verdict via the same logic as the matching single-item evaluate_* tool; results are returned in input order under `results`, plus a shared `batch_id`. There is currently no enforced size limit on `items` in this tool. Use this instead of multiple single-item evaluate_* calls when checking several responses — optionally against different policies — in one priced call rather than paying per item separately."""
+    """PRE-ACTION Bulk Processing ($0.10). Evaluates a list of items in one call; each item is a dict shaped {"response": str, "policy"?: str}, where policy defaults to "default" if omitted and may be any built-in policy name (default, strict, anti_jailbreak, safety, content_quality). Each item gets its own independent COMMIT/NO_COMMIT verdict via the same logic as the matching single-item evaluate_* tool; results are returned in input order under `results`, plus a shared `batch_id`. Capped at 200 items per call — oversized batches are rejected. Use this instead of multiple single-item evaluate_* calls when checking several responses — optionally against different policies — in one priced call rather than paying per item separately."""
+    if len(items) > _MAX_BATCH_ITEMS:
+        raise ValueError(f"Batch too large: {len(items)} items exceeds the {_MAX_BATCH_ITEMS}-item cap.")
     results = [
         _run_evaluation(item["response"], item.get("policy", "default"), agent_id, "batch_item")
         for item in items
@@ -549,6 +621,7 @@ def dcl_evaluate_batch(
 
 
 @mcp.tool(title="Start Pipeline Session", annotations=_WRITE_ANNOTATIONS)
+@_rate_limited
 @price(price=0.05, currency="USD")
 def dcl_pipeline_start(
     agent_id: Annotated[str, Field(description="Identifier of the agent that owns this session.")],
@@ -565,6 +638,7 @@ def dcl_pipeline_start(
 
 
 @mcp.tool(title="Basic Audit Decode", annotations=_READ_ANNOTATIONS)
+@_rate_limited
 @price(price=0.10, currency="USD")
 def dcl_audit_decode(
     tx_hash: Annotated[str, Field(description="Transaction hash of the audit chain record to retrieve.")],
@@ -586,6 +660,7 @@ def dcl_audit_decode(
 
 
 @mcp.tool(title="Deep Forensic Audit Decode", annotations=_READ_ANNOTATIONS)
+@_rate_limited
 @price(price=0.50, currency="USD")
 def dcl_audit_decode_deep(
     tx_hash: Annotated[str, Field(description="Transaction hash of the audit chain record to retrieve.")],
@@ -614,6 +689,7 @@ def dcl_audit_decode_deep(
 # Suggested pipeline order: firewall -> wallet -> trade -> mev -> commit (last).
 # ════════════════════════════════════════════════════════════════════════════════
 @mcp.tool(title="Crypto Jailbreak & Injection Detection", annotations=_WRITE_ANNOTATIONS)
+@_rate_limited
 @price(price=0.02, currency="USD")
 def dcl_evaluate_jailbreak_crypto(
     response: Annotated[str, Field(description="The incoming prompt or agent response to screen for crypto-specialized jailbreak/injection attempts.")],
@@ -625,6 +701,7 @@ def dcl_evaluate_jailbreak_crypto(
 
 
 @mcp.tool(title="Wallet Secret Guardian", annotations=_WRITE_ANNOTATIONS)
+@_rate_limited
 @price(price=0.02, currency="USD")
 def dcl_evaluate_wallet(
     response: Annotated[str, Field(description="The text to scan for seed phrases, private keys, wallet addresses, and wallet-context API credentials.")],
@@ -636,6 +713,7 @@ def dcl_evaluate_wallet(
 
 
 @mcp.tool(title="Trade Decision Verifier", annotations=_WRITE_ANNOTATIONS)
+@_rate_limited
 @price(price=0.02, currency="USD")
 def dcl_evaluate_trade(
     response: Annotated[str, Field(description="The trade decision or recommendation text to screen.")],
@@ -647,6 +725,7 @@ def dcl_evaluate_trade(
 
 
 @mcp.tool(title="MEV & Market-Abuse Compliance Screen", annotations=_WRITE_ANNOTATIONS)
+@_rate_limited
 @price(price=0.03, currency="USD")
 def dcl_evaluate_mev(
     response: Annotated[str, Field(description="The agent or LLM response text describing or proposing an on-chain/trading action, to screen for MEV and market-abuse language.")],
@@ -658,6 +737,7 @@ def dcl_evaluate_mev(
 
 
 @mcp.tool(title="Market Signal Fabrication Screen", annotations=_WRITE_ANNOTATIONS)
+@_rate_limited
 @price(price=0.03, currency="USD")
 def dcl_evaluate_signal(
     response: Annotated[str, Field(description="The market signal, analysis, or price-prediction text to screen.")],
@@ -669,6 +749,7 @@ def dcl_evaluate_signal(
 
 
 @mcp.tool(title="Output Sanitizer — Final Gate", annotations=_WRITE_ANNOTATIONS)
+@_rate_limited
 @price(price=0.02, currency="USD")
 def dcl_evaluate_output_sanitizer(
     response: Annotated[str, Field(description="The raw LLM/agent response to sanitize before it is delivered to a user, downstream agent, or external system.")],
@@ -680,6 +761,7 @@ def dcl_evaluate_output_sanitizer(
 
 
 @mcp.tool(title="Leibniz Layer Crypto Commit", annotations=_WRITE_ANNOTATIONS)
+@_rate_limited
 @price(price=0.01, currency="USD")
 def dcl_commit(
     decision: Annotated[str, Field(description="The final trading/agent decision text to commit to the audit chain.")],
