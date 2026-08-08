@@ -1,25 +1,39 @@
-# DCL Trust Oracle — x402 MCP Server
+# DCL Trust Oracle
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![MCP](https://img.shields.io/badge/MCP-compatible-green.svg)](https://modelcontextprotocol.io)
-[![x402](https://img.shields.io/badge/x402-USDC%20on%20Base-blueviolet.svg)](https://x402.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![dcl-webhook MCP server](https://glama.ai/mcp/servers/Fronesis-Labs/dcl-webhook/badges/card.svg)](https://glama.ai/mcp/servers/Fronesis-Labs/dcl-webhook)
 [![Smithery](https://img.shields.io/badge/Smithery-listed-orange.svg)](https://smithery.ai/servers/fronesislabs/dcl-trust-oracle)
 [![Score](https://glama.ai/mcp/servers/Fronesis-Labs/dcl-webhook/badges/score.svg)](https://glama.ai/mcp/servers/Fronesis-Labs/dcl-webhook/score)
 
-Deterministic AI audit layer with cryptographic micropayments via x402 protocol.
+**Don't trust the agent. Trust the proof.**
+
+Autonomous AI agents now take actions with real consequences — financial,
+legal, reputational. Most of them are black boxes: no record of what was
+decided, why, or whether that decision was tampered with afterward.
+
+DCL Trust Oracle closes that gap. Every agent output is evaluated against
+policy in real time and sealed into a tamper-evident hash chain — a
+deterministic, cryptographically verifiable record of what happened and
+when. Edit any past entry and the entire chain invalidates. No one — not
+even Fronesis Labs — has to be trusted for the record to hold up.
 
 ## What It Does
 
-DCL Trust Oracle provides deterministic policy evaluation for LLM outputs with a tamper-evident audit chain. The system stores only cryptographic hashes and decision metadata — never raw content — enabling verifiable, post-action forensic analysis across distributed AI agents.
+DCL Trust Oracle provides deterministic policy evaluation for LLM outputs
+with a tamper-evident audit chain. The system stores only cryptographic
+hashes and decision metadata — **never raw content** — enabling verifiable,
+post-action forensic analysis across distributed AI agents.
 
-Available two ways, both metered per call via x402:
+Available two ways:
 
-- **REST API** (`webhook_server.py`) — direct HTTP integration, x402-gated with `fastapi-x402`.
-- **MCP Server** (`mcp_server.py`) — native Model Context Protocol integration for AI agents, hosted on Smithery, x402-gated with `paymcp`.
+- **REST API** (`webhook_server.py`) — direct HTTP integration.
+- **MCP Server** (`mcp_server.py`) — native Model Context Protocol
+  integration for AI agents, hosted on Smithery.
 
-Both servers share the same evaluation logic and tamper-evident chain (`dcl_core.py`), and are priced identically.
+Both servers share the same evaluation logic and tamper-evident chain
+(`dcl_core.py`), and are priced identically.
 
 ## Quick Start
 
@@ -41,6 +55,9 @@ Server runs on `http://localhost:8081` (streamable-http transport)
 
 ### Pre-Action Evaluation
 
+Catch a bad output *before* it reaches a user, a wallet, or downstream
+system.
+
 | REST Endpoint | MCP Tool | Price | Description |
 | --- | --- | --- | --- |
 | `POST /evaluate/fast` | `dcl_evaluate_fast` | $0.01 | Fast policy check for low-risk outputs. Returns tamper-evident `tx_hash`. |
@@ -57,6 +74,8 @@ Server runs on `http://localhost:8081` (streamable-http transport)
 | `POST /pipeline/start` | `dcl_pipeline_start` | $0.05 | Initializes a long-running audit session for continuous drift tracking. Returns `pipeline_id`. |
 
 ### Post-Action Forensics
+
+When something *did* go wrong, reconstruct exactly what happened.
 
 | REST Endpoint | MCP Tool | Price | Description |
 | --- | --- | --- | --- |
@@ -90,49 +109,29 @@ Server runs on `http://localhost:8081` (streamable-http transport)
 }
 ```
 
-## x402 Integration
+## Verifying the Chain Yourself
 
-All paid endpoints and tools require payment via the x402 protocol before returning a result — no free tier, no bypass. Both the REST API and MCP server settle to the same wallet.
+You don't have to take the server's word for it. `tx_hash` is recomputed
+from the record's own fields, not just linked to the previous row — so
+anyone can independently confirm a record wasn't edited after the fact,
+without calling back into this server. See
+[`@fronesis-labs/dcl-sdk`](https://github.com/Fronesis-Labs/dcl-sdk) (TS/JS)
+or [`dcl-core`](https://github.com/Fronesis-Labs/dcl-core) (Python) for the
+free, offline verification libraries.
 
-- **Networks:** Base, Avalanche, IoTeX
-- **Asset:** USDC
-- **Facilitator (REST):** `https://x402.org/facilitator` (via `fastapi-x402`)
-- **Facilitator (MCP):** `paymcp` in `Mode.AUTO` — automatic on-chain payment for x402-aware MCP clients, guided payment link (ELICITATION/RESUBMIT) for clients without a wallet. No path skips payment.
+## Metering & Settlement
 
-## Metadata-Only Architecture
+Every paid call above is metered and settled automatically per request, via
+the [x402 protocol](https://x402.org) (USDC on Base, Avalanche, or IoTeX) —
+no subscription, no API-key provisioning, no invoicing overhead. This is
+what makes per-call pricing practical at agent scale (an autonomous system
+can make thousands of evaluation calls a day). The REST API is x402-gated
+via `fastapi-x402`; the MCP server via `paymcp` in `Mode.AUTO`, which pays
+automatically for x402-aware clients and falls back to a guided payment
+link for clients without a wallet configured. Both settle to the same
+wallet, and neither has a bypass path — an unpaid call simply gets no
+verdict.
 
-DCL Trust Oracle is designed around a **hash-based audit trail**:
+## License
 
-- Raw content never stored — only SHA-256 hashes and decision metadata
-- Tamper-evident cryptographic chain (SQLite-backed, WAL mode)
-- Chain survives server restarts — audit records persist indefinitely
-- Verifiable integrity via `GET /chain/status`
-- Full export via `GET /chain/export`
-- Shared chain across REST and MCP — a `tx_hash` returned by one interface can be audited through the other
-
-Each audit record contains: `tx_hash`, `prev_hash`, `verdict`, `input_hash`, `policy_hash`, `agent_id`, `reason`, `confidence`, `task_type`, `timestamp`, and `drift_context`.
-
-## Built-in Policies
-
-| Policy | Min Confidence | Purpose |
-| --- | --- | --- |
-| `default` | 0.70 | General-purpose evaluation |
-| `anti_jailbreak` | 0.80 | Detects prompt injection, role-hijacking, DAN-style attacks |
-| `safety` | 0.75 | Baseline harmful-pattern screening |
-| `content_quality` | 0.85 | Quality assurance, format adherence, drift detection |
-
-Custom policies can be passed inline as YAML via the `policy` field.
-
-## Links
-
-- **Live API:** https://fronesislabs.com/docs
-- **MCP Server:** https://mcp.fronesislabs.com
-- **MCP Manifest:** https://fronesislabs.com/.well-known/agent.json
-- **GitHub:** https://github.com/Fronesis-Labs/dcl-webhook
-- **Smithery.ai:** https://smithery.ai/servers/fronesislabs/dcl-trust-oracle
-- **Glama.ai:** https://glama.ai/mcp/servers/Fronesis-Labs/dcl-webhook
-
-## Contact
-
-partnership@fronesislabs.com
-
+MIT — see [LICENSE](LICENSE).

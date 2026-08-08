@@ -1,0 +1,32 @@
+name: Bug Report
+description: Something else is broken (API, MCP tool, deployment, docs)
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If your report is about a specific record being wrong or tampered,
+        use the **Chain / Verdict Dispute** template instead — it'll get you
+        to an answer faster.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: dcl-webhook version / deployment (REST, MCP, both)
+    validations:
+      required: false

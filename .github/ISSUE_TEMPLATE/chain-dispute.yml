@@ -1,0 +1,63 @@
+name: Chain / Verdict Dispute
+description: Report a suspected tampered record, wrong verdict, or broken chain
+title: "[chain] "
+labels: ["chain-integrity"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Don't trust the agent. Trust the proof — and that includes trusting this report.**
+
+        Before filing, verify the record locally. It takes one function call and
+        costs nothing, and it tells us (and you) whether the problem is the chain
+        itself or something else — a policy question, a client bug, a
+        misunderstanding of the response shape.
+
+  - type: dropdown
+    id: verified
+    attributes:
+      label: Have you verified the chain locally with dcl-sdk / dcl-core before reporting?
+      description: >
+        Use `verifyChain()` (TypeScript, `@fronesis-labs/dcl-sdk`) or
+        `verify_chain()` (Python, `dcl-core`) against the record(s) in question.
+      options:
+        - "Yes — output is pasted below"
+        - "No — I'll verify first and come back"
+        - "Not applicable — this isn't about a specific record (e.g. API/docs bug)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: verify-output
+    attributes:
+      label: Local verification output
+      description: >
+        Paste the result of `verifyChain()` / `verify_chain()` — the `clean`
+        flag, `badIndex`/`bad_index`, and `reason` if it failed. Leave blank if
+        you selected "No" or "Not applicable" above.
+      placeholder: |
+        { clean: false, badIndex: 42, reason: "hash mismatch: recomputed ... != stored tx_hash ..." }
+    validations:
+      required: false
+
+  - type: input
+    id: tx-hash
+    attributes:
+      label: tx_hash of the disputed record
+      placeholder: "0x7a8f3b2c..."
+    validations:
+      required: false
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What did you expect vs. what you saw
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: dcl-webhook / dcl-sdk / dcl-core version(s) in use
+    validations:
+      required: false

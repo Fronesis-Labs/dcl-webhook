@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Verify a chain right now
+    url: https://github.com/Fronesis-Labs/dcl-sdk#quickstart-verify-records-you-already-have
+    about: TypeScript/JS — no install needed to read how, npm install @fronesis-labs/dcl-sdk to run it.
+  - name: Verify a chain right now (Python)
+    url: https://github.com/Fronesis-Labs/dcl-core#quick-start
+    about: pip install dcl-core, then chain.verify()
