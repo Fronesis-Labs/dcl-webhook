@@ -2,10 +2,9 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![MCP](https://img.shields.io/badge/MCP-compatible-green.svg)](https://modelcontextprotocol.io)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![dcl-webhook MCP server](https://glama.ai/mcp/servers/Fronesis-Labs/dcl-webhook/badges/card.svg)](https://glama.ai/mcp/servers/Fronesis-Labs/dcl-webhook)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![dcl-webhook MCP server](https://glama.ai/mcp/servers/Fronesis-Labs/dcl-webhook/badges/score.svg)](https://glama.ai/mcp/servers/Fronesis-Labs/dcl-webhook)
 [![Smithery](https://img.shields.io/badge/Smithery-listed-orange.svg)](https://smithery.ai/servers/fronesislabs/dcl-trust-oracle)
-[![Score](https://glama.ai/mcp/servers/Fronesis-Labs/dcl-webhook/badges/score.svg)](https://glama.ai/mcp/servers/Fronesis-Labs/dcl-webhook/score)
 
 **Don't trust the agent. Trust the proof.**
 
@@ -134,4 +133,4 @@ verdict.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Apache License 2.0 — see [LICENSE](LICENSE).
