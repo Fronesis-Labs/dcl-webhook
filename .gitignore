@@ -5,3 +5,4 @@ venv/
 dcl_chain.db
 dcl_chain.db-shm
 dcl_chain.db-wal
+__pycache__/
