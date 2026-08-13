@@ -29,7 +29,9 @@ Available two ways:
 
 - **REST API** (`webhook_server.py`) — direct HTTP integration.
 - **MCP Server** (`mcp_server.py`) — native Model Context Protocol
-  integration for AI agents, hosted on Smithery.
+  integration for AI agents. Live at `https://mcp.fronesislabs.com/mcp`
+  (streamable-http). Also listed on [Smithery](https://smithery.ai/servers/fronesislabs/dcl-trust-oracle)
+  and the [official MCP Registry](https://registry.modelcontextprotocol.io/v0/servers?search=com.fronesislabs%2Fdcl-trust-oracle).
 
 Both servers share the same evaluation logic and tamper-evident chain
 (`dcl_core.py`), and are priced identically.
@@ -44,6 +46,14 @@ python webhook_server.py
 Server runs on `http://localhost:8080`
 
 ### MCP Server
+
+**Production (hosted):**
+```
+https://mcp.fronesislabs.com/mcp
+```
+Streamable HTTP transport — point any MCP client here directly, no setup required.
+
+**Local development:**
 ```
 pip install -r requirements.txt
 python mcp_server.py
@@ -64,7 +74,7 @@ system.
 | `POST /evaluate/jailbreak` | `dcl_evaluate_jailbreak` | $0.02 | Instruction adherence check — detects prompt injection patterns and role-hijacking attempts. |
 | `POST /evaluate/safety` | `dcl_evaluate_safety` | $0.01 | Baseline screening for known harmful text patterns. Optimized for high throughput. |
 | `POST /evaluate/quality` | `dcl_evaluate_quality` | $0.03 | Content quality & drift check — evaluates format adherence and contextual drift. |
-| `POST /evaluate/batch` | `dcl_evaluate_batch` | $0.10 | Bulk processing — up to 20 items per transaction. Cost-effective for multi-turn history. |
+| `POST /evaluate/batch` | `dcl_evaluate_batch` | $0.10 | Bulk processing — up to 200 items per MCP call (REST default `max_items`: 20). Cost-effective for multi-turn history. |
 
 ### Session Management
 
@@ -80,6 +90,27 @@ When something *did* go wrong, reconstruct exactly what happened.
 | --- | --- | --- | --- |
 | `GET /audit/{tx_hash}` | `dcl_audit_decode` | $0.10 | Basic post-action audit — returns verdict, confidence, agent_id, reason by `tx_hash`. |
 | `GET /audit/{tx_hash}/deep` | `dcl_audit_decode_deep` | $0.50 | Deep forensic audit — includes drift context, tamper-evidence indices, environmental metadata. |
+
+### Post-Action Scans
+
+| REST Endpoint | MCP Tool | Price | Description |
+| --- | --- | --- | --- |
+| `POST /evaluate/secrets` | `dcl_evaluate_secrets` | $0.02 | Secret & credential leak scan. |
+| `POST /evaluate/pii` | `dcl_evaluate_pii` | $0.02 | PII detection scan. |
+
+### Crypto & Trading Compliance (MCP only)
+
+These tools are exposed on the live MCP server only (no REST routes in `webhook_server.py`).
+
+| MCP Tool | Price | Description |
+| --- | --- | --- |
+| `dcl_evaluate_jailbreak_crypto` | $0.02 | Crypto-specific jailbreak & injection detection. |
+| `dcl_evaluate_wallet` | $0.02 | Wallet secret guardian. |
+| `dcl_evaluate_trade` | $0.02 | Trade decision verifier. |
+| `dcl_evaluate_mev` | $0.03 | MEV & market-abuse compliance screen. |
+| `dcl_evaluate_signal` | $0.03 | Market signal fabrication screen. |
+| `dcl_evaluate_output_sanitizer` | $0.02 | Output sanitizer — final gate. |
+| `dcl_commit` | $0.01 | Leibniz Layer crypto commit — seal a decision to the audit chain. |
 
 ### Utility (free, REST only)
 
@@ -121,11 +152,11 @@ free, offline verification libraries.
 ## Metering & Settlement
 
 Every paid call above is metered and settled automatically per request, via
-the [x402 protocol](https://x402.org) (USDC on Base, Avalanche, or IoTeX) —
+the [x402 protocol](https://x402.org) (USDC on Base) —
 no subscription, no API-key provisioning, no invoicing overhead. This is
 what makes per-call pricing practical at agent scale (an autonomous system
 can make thousands of evaluation calls a day). The REST API is x402-gated
-via `fastapi-x402`; the MCP server via `paymcp` in `Mode.AUTO`, which pays
+via `fastapi-x402`; the MCP server via `paymcp` in `Mode.X402`, which pays
 automatically for x402-aware clients and falls back to a guided payment
 link for clients without a wallet configured. Both settle to the same
 wallet, and neither has a bypass path — an unpaid call simply gets no
