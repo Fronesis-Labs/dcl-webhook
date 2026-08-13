@@ -12,7 +12,10 @@ Install first:
 
 Required env vars (put in .env, loaded via python-dotenv):
     X402_WALLET — your payout wallet (same one used elsewhere)
-    CDP_API_KEY_ID / CDP_API_KEY_SECRET — CDP facilitator auth (required for Bazaar indexing)
+    CDP credentials (required for CDP Bazaar indexing), any of:
+      - CDP_API_KEY_JSON=/path/to/cdp_api_key.json  (recommended; downloaded from CDP Portal)
+      - CDP_API_KEY_ID + CDP_API_KEY_SECRET         (Python cdp-sdk names)
+      - CDP_KEY_ID + CDP_KEY_SECRET                  (alias for other tooling)
 
 Uses the CDP facilitator (https://api.cdp.coinbase.com/platform/v2/x402) so verify+settle
 transactions are cataloged in the CDP Bazaar. Falls back to X402_FACILITATOR_URL if CDP keys
@@ -22,6 +25,7 @@ Run (does not touch dcl-evaluator/dcl-webhook — separate port, separate servic
     PORT=5000 python3 bazaar_server.py
 """
 import os
+import json
 import time
 import uuid
 from typing import Optional
@@ -71,12 +75,51 @@ _commit_rate: list = []
 # ════════════════════════════════════════════════════════════════════════════════
 # x402 v2 resource server setup
 # ════════════════════════════════════════════════════════════════════════════════
+def _load_cdp_credentials() -> tuple[str | None, str | None, str]:
+    """Load CDP API key id/secret from JSON file or env (supports common alias names)."""
+    json_path = os.environ.get("CDP_API_KEY_JSON")
+    if not json_path:
+        for candidate in ("cdp_api_key.json", "CDP_API_KEY.json"):
+            if os.path.isfile(candidate):
+                json_path = candidate
+                break
+    if json_path and os.path.isfile(json_path):
+        with open(json_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        key_id = data.get("id") or data.get("name") or data.get("apiKeyId")
+        secret = data.get("privateKey") or data.get("private_key") or data.get("secret")
+        if key_id and secret:
+            return str(key_id), str(secret), f"json:{json_path}"
+
+    key_id = (
+        os.environ.get("CDP_API_KEY_ID")
+        or os.environ.get("CDP_KEY_ID")
+        or os.environ.get("CDP_API_KEY_NAME")
+    )
+    secret = os.environ.get("CDP_API_KEY_SECRET") or os.environ.get("CDP_KEY_SECRET")
+    if key_id and secret:
+        return key_id, secret, "env"
+    return None, None, "none"
+
+
+def _describe_cdp_secret(secret: str) -> str:
+    trimmed = secret.strip()
+    if trimmed.startswith("-----BEGIN"):
+        return "PEM private key"
+    if len(trimmed) <= 120:
+        return f"short secret ({len(trimmed)} chars; Ed25519/base64 or truncated PEM)"
+    return f"secret ({len(trimmed)} chars)"
+
+
 def _build_facilitator() -> HTTPFacilitatorClient:
-    cdp_key_id = os.environ.get("CDP_API_KEY_ID")
-    cdp_key_secret = os.environ.get("CDP_API_KEY_SECRET")
+    cdp_key_id, cdp_key_secret, source = _load_cdp_credentials()
     if cdp_key_id and cdp_key_secret:
         from cdp.x402 import create_facilitator_config
 
+        print(
+            f"CDP credentials loaded from {source}; "
+            f"key_id={cdp_key_id[:8]}…; {_describe_cdp_secret(cdp_key_secret)}"
+        )
         client = HTTPFacilitatorClient(create_facilitator_config(cdp_key_id, cdp_key_secret))
         try:
             client.get_supported()
@@ -85,7 +128,8 @@ def _build_facilitator() -> HTTPFacilitatorClient:
         except Exception as exc:
             print(
                 f"WARNING: CDP facilitator auth failed ({exc}). "
-                "Falling back to PayAI — fix CDP keys for Bazaar indexing."
+                "Regenerate the key in CDP Portal (download fresh JSON) and restart. "
+                "Falling back to PayAI — transactions will NOT appear in CDP Bazaar."
             )
     override_url = os.environ.get("X402_FACILITATOR_URL")
     fallback_url = override_url or PAYAI_FACILITATOR_URL
