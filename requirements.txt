@@ -4,6 +4,9 @@ fastapi>=0.100.0
 uvicorn>=0.23.0
 pydantic>=2.0.0
 httpx>=0.24.0
+x402[fastapi,extensions]>=2.18.0
+cdp-sdk>=1.0.0
+python-dotenv>=1.0.0
 fastapi-x402>=0.1.8
 slowapi>=0.1.9
 paymcp @ git+https://github.com/Fronesis-Labs/paymcp.git@291c797

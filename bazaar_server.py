@@ -29,13 +29,13 @@ from typing import Optional
 from dotenv import load_dotenv
 load_dotenv(override=True)
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from x402 import x402ResourceServer
 from x402.http import FacilitatorConfig, HTTPFacilitatorClient
-from x402.http.middleware.fastapi import payment_middleware
+from x402.http.middleware.fastapi import PaymentMiddlewareASGI
 from x402.http.types import PaymentOption, RouteConfig
 from x402.mechanisms.evm.exact import register_exact_evm_server
 from x402.extensions.bazaar import declare_discovery_extension, bazaar_resource_server_extension, OutputConfig
@@ -49,7 +49,6 @@ from audit_logic import BUILTIN_POLICIES, evaluate_policy, get_drift_mode
 X402_WALLET = os.environ.get("X402_WALLET", "0x0000000000000000000000000000000000000000")
 X402_NETWORK = os.environ.get("X402_NETWORK", "eip155:8453")  # Base mainnet, CAIP-2 format
 CDP_FACILITATOR_URL = "https://api.cdp.coinbase.com/platform/v2/x402"
-FACILITATOR_URL = os.environ.get("X402_FACILITATOR_URL", CDP_FACILITATOR_URL)
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://bazaar.fronesislabs.com")
 USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 PAYAI_FACILITATOR_URL = "https://facilitator.payai.network"
@@ -72,31 +71,20 @@ _commit_rate: list = []
 # ════════════════════════════════════════════════════════════════════════════════
 # x402 v2 resource server setup
 # ════════════════════════════════════════════════════════════════════════════════
-def _cdp_keys_valid(key_id: str | None, key_secret: str | None) -> bool:
-    if not key_id or not key_secret:
-        return False
-    try:
-        from cdp.auth.utils.jwt import _parse_private_key
-        _parse_private_key(key_secret)
-        return True
-    except Exception:
-        return False
-
-
 def _build_facilitator() -> HTTPFacilitatorClient:
     cdp_key_id = os.environ.get("CDP_API_KEY_ID")
     cdp_key_secret = os.environ.get("CDP_API_KEY_SECRET")
-    if _cdp_keys_valid(cdp_key_id, cdp_key_secret):
+    if cdp_key_id and cdp_key_secret:
         from cdp.x402 import create_facilitator_config
+
         print(f"Using CDP facilitator at {CDP_FACILITATOR_URL}")
         return HTTPFacilitatorClient(create_facilitator_config(cdp_key_id, cdp_key_secret))
-    if cdp_key_id and cdp_key_secret:
-        print(
-            "WARNING: CDP_API_KEY_ID/SECRET present but secret is not a valid PEM EC or "
-            "base64 Ed25519 key — falling back to PayAI. Fix keys for CDP Bazaar indexing."
-        )
-    fallback_url = os.environ.get("X402_FACILITATOR_URL", PAYAI_FACILITATOR_URL)
-    print(f"Using facilitator at {fallback_url}")
+    override_url = os.environ.get("X402_FACILITATOR_URL")
+    fallback_url = override_url or PAYAI_FACILITATOR_URL
+    print(
+        f"WARNING: CDP_API_KEY_ID/SECRET not set — using {fallback_url}. "
+        "Set CDP keys for CDP Bazaar indexing."
+    )
     return HTTPFacilitatorClient(FacilitatorConfig(url=fallback_url))
 
 
@@ -120,6 +108,22 @@ _EVALUATE_OUTPUT_EXAMPLE = {
     "tx_hash": "0xabc123...",
     "chain_index": 42,
 }
+_EVALUATE_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string"},
+        "confidence": {"type": "number"},
+        "reason": {"type": "string"},
+        "tx_hash": {"type": "string"},
+        "chain_index": {"type": "integer"},
+        "input_hash": {"type": "string"},
+        "policy_version": {"type": "string"},
+        "timestamp": {"type": "number"},
+        "drift_mode": {"type": "string"},
+        "drift_score": {"type": "number"},
+    },
+    "required": ["verdict", "confidence", "reason", "tx_hash", "chain_index"],
+}
 
 
 def _route_config(path: str, price: str, description: str) -> RouteConfig:
@@ -127,9 +131,10 @@ def _route_config(path: str, price: str, description: str) -> RouteConfig:
         input={"response": "example agent output", "agent_id": "agent-123"},
         input_schema=_EVALUATE_INPUT_SCHEMA,
         body_type="json",
-        output=OutputConfig(example=_EVALUATE_OUTPUT_EXAMPLE),
+        output=OutputConfig(example=_EVALUATE_OUTPUT_EXAMPLE, schema=_EVALUATE_OUTPUT_SCHEMA),
     )
-    # Required for startup bazaar schema validation (method is also enriched at request time).
+    # Satisfy startup schema validation; bazaar_resource_server_extension also sets
+    # method from the route key / request at runtime.
     extension["bazaar"]["info"]["input"]["method"] = "POST"
     return RouteConfig(
         accepts=PaymentOption(
@@ -149,27 +154,25 @@ def _route_config(path: str, price: str, description: str) -> RouteConfig:
 
 
 routes = {
-    "* /evaluate/fast": _route_config(
+    "POST /evaluate/fast": _route_config(
         "/evaluate/fast", "$0.01", "Fast pre-action policy audit of an agent response."
     ),
-    "* /evaluate/strict": _route_config(
+    "POST /evaluate/strict": _route_config(
         "/evaluate/strict", "$0.05", "Strict pre-action audit with a higher confidence bar."
     ),
-    "* /evaluate/jailbreak": _route_config(
+    "POST /evaluate/jailbreak": _route_config(
         "/evaluate/jailbreak", "$0.02", "Jailbreak / instruction-adherence detection."
     ),
-    "* /evaluate/safety": _route_config(
+    "POST /evaluate/safety": _route_config(
         "/evaluate/safety", "$0.01", "Baseline safety policy check."
     ),
-    "* /evaluate/quality": _route_config(
+    "POST /evaluate/quality": _route_config(
         "/evaluate/quality", "$0.03", "Content quality and drift check."
     ),
 }
 
-
-@app.middleware("http")
-async def x402_middleware(request: Request, call_next):
-    return await payment_middleware(routes, server)(request, call_next)
+# Payment middleware must run before route handlers (and before any auth middleware).
+app.add_middleware(PaymentMiddlewareASGI, routes=routes, server=server)
 
 
 @app.get("/.well-known/402index-verify.txt")
@@ -299,8 +302,6 @@ def health():
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8083))
-    print("\n╔══════════════════════════════════════════════════════╗")
-    print("║ DCL Evaluator — Bazaar Server (x402 v2)              ║")
-    print("║ Fronesis Labs · parallel to webhook_server.py (v1)   ║")
-    print("╚══════════════════════════════════════════════════════╝\n")
+    print("\n=== DCL Evaluator — Bazaar Server (x402 v2) ===")
+    print("=== Fronesis Labs · parallel to webhook_server.py (v1) ===\n")
     uvicorn.run("bazaar_server:app", host="0.0.0.0", port=port, reload=False)
