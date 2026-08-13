@@ -1,6 +1,8 @@
 __pycache__/
 *.pyc
 .env
+.mcp-registry/
+mcp-publisher.exe
 venv/
 dcl_chain.db
 dcl_chain.db-shm

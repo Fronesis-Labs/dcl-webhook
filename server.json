@@ -1,8 +1,10 @@
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "com.fronesislabs/dcl-trust-oracle",
-  "description": "Deterministic AI audit layer for LLM/agent outputs: policy checks, tamper-evident log, x402.",
-  "version": "2.3.0",
+  "title": "DCL Trust Oracle — AI/LLM Output Audit (x402 MCP)",
+  "description": "AI/LLM agent output audit MCP: policy eval, tamper-evident chain, AI safety, x402 USDC on Base.",
+  "version": "2.3.1",
+  "websiteUrl": "https://fronesislabs.com",
   "repository": {
     "url": "https://github.com/Fronesis-Labs/dcl-webhook",
     "source": "github"
@@ -12,5 +14,46 @@
       "type": "streamable-http",
       "url": "https://mcp.fronesislabs.com/mcp"
     }
-  ]
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "keywords": [
+        "AI audit",
+        "LLM audit",
+        "AI agent audit",
+        "LLM evaluation",
+        "AI output evaluation",
+        "AI safety",
+        "MCP audit",
+        "x402",
+        "policy evaluation",
+        "governance",
+        "tamper-evident",
+        "Base",
+        "USDC"
+      ],
+      "categories": ["audit", "safety", "governance", "payments"],
+      "tags": ["mcp", "x402", "llm", "agents", "policy", "usdc", "base"],
+      "tools": [
+        {"name": "dcl_evaluate_fast", "title": "Fast Pre-Action Audit"},
+        {"name": "dcl_evaluate_strict", "title": "Strict Pre-Action Audit"},
+        {"name": "dcl_evaluate_jailbreak", "title": "Jailbreak Detection Check"},
+        {"name": "dcl_evaluate_safety", "title": "Baseline Safety Check"},
+        {"name": "dcl_evaluate_quality", "title": "Content Quality & Drift Check"},
+        {"name": "dcl_evaluate_secrets", "title": "Secret & Credential Leak Scan"},
+        {"name": "dcl_evaluate_pii", "title": "PII Detection Scan"},
+        {"name": "dcl_evaluate_batch", "title": "Batch Evaluation"},
+        {"name": "dcl_pipeline_start", "title": "Start Pipeline Session"},
+        {"name": "dcl_audit_decode", "title": "Basic Audit Decode"},
+        {"name": "dcl_audit_decode_deep", "title": "Deep Forensic Audit Decode"},
+        {"name": "dcl_evaluate_jailbreak_crypto", "title": "Crypto Jailbreak & Injection Detection"},
+        {"name": "dcl_evaluate_wallet", "title": "Wallet Secret Guardian"},
+        {"name": "dcl_evaluate_trade", "title": "Trade Decision Verifier"},
+        {"name": "dcl_evaluate_mev", "title": "MEV & Market-Abuse Compliance Screen"},
+        {"name": "dcl_evaluate_signal", "title": "Market Signal Fabrication Screen"},
+        {"name": "dcl_evaluate_output_sanitizer", "title": "Output Sanitizer — Final Gate"},
+        {"name": "dcl_commit", "title": "Leibniz Layer Crypto Commit"}
+      ]
+    }
+  }
 }
