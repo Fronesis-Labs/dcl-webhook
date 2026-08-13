@@ -77,14 +77,25 @@ def _build_facilitator() -> HTTPFacilitatorClient:
     if cdp_key_id and cdp_key_secret:
         from cdp.x402 import create_facilitator_config
 
-        print(f"Using CDP facilitator at {CDP_FACILITATOR_URL}")
-        return HTTPFacilitatorClient(create_facilitator_config(cdp_key_id, cdp_key_secret))
+        client = HTTPFacilitatorClient(create_facilitator_config(cdp_key_id, cdp_key_secret))
+        try:
+            client.get_supported()
+            print(f"Using CDP facilitator at {CDP_FACILITATOR_URL}")
+            return client
+        except Exception as exc:
+            print(
+                f"WARNING: CDP facilitator auth failed ({exc}). "
+                "Falling back to PayAI — fix CDP keys for Bazaar indexing."
+            )
     override_url = os.environ.get("X402_FACILITATOR_URL")
     fallback_url = override_url or PAYAI_FACILITATOR_URL
-    print(
-        f"WARNING: CDP_API_KEY_ID/SECRET not set — using {fallback_url}. "
-        "Set CDP keys for CDP Bazaar indexing."
-    )
+    if not (cdp_key_id and cdp_key_secret):
+        print(
+            f"WARNING: CDP_API_KEY_ID/SECRET not set — using {fallback_url}. "
+            "Set CDP keys for CDP Bazaar indexing."
+        )
+    else:
+        print(f"Using fallback facilitator at {fallback_url}")
     return HTTPFacilitatorClient(FacilitatorConfig(url=fallback_url))
 
 
