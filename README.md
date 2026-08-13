@@ -31,7 +31,8 @@ Available two ways:
 - **MCP Server** (`mcp_server.py`) — native Model Context Protocol
   integration for AI agents. Live at `https://mcp.fronesislabs.com/mcp`
   (streamable-http). Also listed on [Smithery](https://smithery.ai/servers/fronesislabs/dcl-trust-oracle)
-  and the [official MCP Registry](https://registry.modelcontextprotocol.io/v0/servers?search=com.fronesislabs%2Fdcl-trust-oracle).
+  (remote URL → same production endpoint; see `smithery.yaml`) and the
+  [official MCP Registry](https://registry.modelcontextprotocol.io/v0/servers?search=com.fronesislabs%2Fdcl-trust-oracle).
 
 Both servers share the same evaluation logic and tamper-evident chain
 (`dcl_core.py`), and are priced identically.

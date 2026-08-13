@@ -1,13 +1,61 @@
-# Smithery configuration file: https://smithery.ai/docs/config#smitheryyaml
-runtime: "container"
+# Smithery configuration: https://smithery.ai/docs/build/publish
+version: 1
 
-build:
-  dockerfile: "Dockerfile"
-  dockerBuildPath: "."
+name: dcl-trust-oracle
+displayName: DCL Trust Oracle — AI/LLM Output Audit (x402 MCP)
+description: >-
+  AI/LLM agent output audit MCP for Fronesis Labs: deterministic policy evaluation,
+  tamper-evident hash chain, AI safety, jailbreak detection, secret leak scan, PII
+  detection, crypto/trading compliance, and forensic decode. 18 tools on streamable
+  HTTP at https://mcp.fronesislabs.com/mcp. MCP and REST are both metered via x402
+  (USDC on Base) — no API key, no signup. Official MCP Registry:
+  com.fronesislabs/dcl-trust-oracle.
+homepage: https://fronesislabs.com
+documentation: https://fronesislabs.com/docs
+repository: https://github.com/Fronesis-Labs/dcl-webhook
+
+# Proxy to production — same URL as MCP Registry and Glama connector.
+runtime: remote
+
+remote:
+  transport: streamable-http
+  url: https://mcp.fronesislabs.com/mcp
 
 startCommand:
-  type: "http"
+  type: http
   configSchema:
-    type: "object"
+    type: object
     properties: {}
-  exampleConfig: {}
+
+categories:
+  - audit
+  - safety
+  - governance
+  - payments
+
+keywords:
+  - AI audit
+  - LLM audit
+  - AI agent audit
+  - LLM evaluation
+  - AI output evaluation
+  - AI safety
+  - MCP audit
+  - x402
+  - Fronesis Labs
+  - DCL Trust Oracle
+  - tamper-evident
+  - jailbreak detection
+  - secret leak scan
+  - crypto compliance
+  - Base
+  - USDC
+
+features:
+  tools: true
+  resources: false
+  prompts: false
+
+maintainer:
+  name: Fronesis Labs
+  url: https://fronesislabs.com
