@@ -12,11 +12,11 @@ Install first:
 
 Required env vars (put in .env, loaded via python-dotenv):
     X402_WALLET — your payout wallet (same one used elsewhere)
+    CDP_API_KEY_ID / CDP_API_KEY_SECRET — CDP facilitator auth (required for Bazaar indexing)
 
-Uses the open PayAI facilitator (https://facilitator.payai.network) —
-supports x402 v2 "exact" on eip155:8453 (Base mainnet), no signup/API key
-required. If PayAI ever changes terms, swap FACILITATOR_URL for CDP's
-(https://api.cdp.coinbase.com/platform/v2/x402, requires CDP API keys).
+Uses the CDP facilitator (https://api.cdp.coinbase.com/platform/v2/x402) so verify+settle
+transactions are cataloged in the CDP Bazaar. Falls back to X402_FACILITATOR_URL if CDP keys
+are absent (e.g. local dev).
 
 Run (does not touch dcl-evaluator/dcl-webhook — separate port, separate service):
     PORT=5000 python3 bazaar_server.py
@@ -48,8 +48,11 @@ from audit_logic import BUILTIN_POLICIES, evaluate_policy, get_drift_mode
 # ════════════════════════════════════════════════════════════════════════════════
 X402_WALLET = os.environ.get("X402_WALLET", "0x0000000000000000000000000000000000000000")
 X402_NETWORK = os.environ.get("X402_NETWORK", "eip155:8453")  # Base mainnet, CAIP-2 format
-FACILITATOR_URL = os.environ.get("X402_FACILITATOR_URL", "https://facilitator.payai.network")
-PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://webhook.fronesislabs.com")
+CDP_FACILITATOR_URL = "https://api.cdp.coinbase.com/platform/v2/x402"
+FACILITATOR_URL = os.environ.get("X402_FACILITATOR_URL", CDP_FACILITATOR_URL)
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://bazaar.fronesislabs.com")
+USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+PAYAI_FACILITATOR_URL = "https://facilitator.payai.network"
 
 app = FastAPI(
     title="DCL Evaluator — Bazaar API (x402 v2)",
@@ -69,7 +72,35 @@ _commit_rate: list = []
 # ════════════════════════════════════════════════════════════════════════════════
 # x402 v2 resource server setup
 # ════════════════════════════════════════════════════════════════════════════════
-facilitator = HTTPFacilitatorClient(FacilitatorConfig(url=FACILITATOR_URL))
+def _cdp_keys_valid(key_id: str | None, key_secret: str | None) -> bool:
+    if not key_id or not key_secret:
+        return False
+    try:
+        from cdp.auth.utils.jwt import _parse_private_key
+        _parse_private_key(key_secret)
+        return True
+    except Exception:
+        return False
+
+
+def _build_facilitator() -> HTTPFacilitatorClient:
+    cdp_key_id = os.environ.get("CDP_API_KEY_ID")
+    cdp_key_secret = os.environ.get("CDP_API_KEY_SECRET")
+    if _cdp_keys_valid(cdp_key_id, cdp_key_secret):
+        from cdp.x402 import create_facilitator_config
+        print(f"Using CDP facilitator at {CDP_FACILITATOR_URL}")
+        return HTTPFacilitatorClient(create_facilitator_config(cdp_key_id, cdp_key_secret))
+    if cdp_key_id and cdp_key_secret:
+        print(
+            "WARNING: CDP_API_KEY_ID/SECRET present but secret is not a valid PEM EC or "
+            "base64 Ed25519 key — falling back to PayAI. Fix keys for CDP Bazaar indexing."
+        )
+    fallback_url = os.environ.get("X402_FACILITATOR_URL", PAYAI_FACILITATOR_URL)
+    print(f"Using facilitator at {fallback_url}")
+    return HTTPFacilitatorClient(FacilitatorConfig(url=fallback_url))
+
+
+facilitator = _build_facilitator()
 server = x402ResourceServer(facilitator)
 register_exact_evm_server(server, networks=X402_NETWORK)
 server.register_extension(bazaar_resource_server_extension)
@@ -106,6 +137,7 @@ def _route_config(path: str, price: str, description: str) -> RouteConfig:
             pay_to=X402_WALLET,
             price=price,
             network=X402_NETWORK,
+            max_timeout_seconds=300,
         ),
         resource=f"{PUBLIC_BASE_URL}{path}",
         description=description,
@@ -117,19 +149,19 @@ def _route_config(path: str, price: str, description: str) -> RouteConfig:
 
 
 routes = {
-    "POST /evaluate/fast": _route_config(
+    "* /evaluate/fast": _route_config(
         "/evaluate/fast", "$0.01", "Fast pre-action policy audit of an agent response."
     ),
-    "POST /evaluate/strict": _route_config(
+    "* /evaluate/strict": _route_config(
         "/evaluate/strict", "$0.05", "Strict pre-action audit with a higher confidence bar."
     ),
-    "POST /evaluate/jailbreak": _route_config(
+    "* /evaluate/jailbreak": _route_config(
         "/evaluate/jailbreak", "$0.02", "Jailbreak / instruction-adherence detection."
     ),
-    "POST /evaluate/safety": _route_config(
+    "* /evaluate/safety": _route_config(
         "/evaluate/safety", "$0.01", "Baseline safety policy check."
     ),
-    "POST /evaluate/quality": _route_config(
+    "* /evaluate/quality": _route_config(
         "/evaluate/quality", "$0.03", "Content quality and drift check."
     ),
 }
@@ -160,19 +192,22 @@ def x402_manifest():
         "resources": [
             {
                 "resource": {
-                    "url": f"{PUBLIC_BASE_URL}{key.split(' ', 1)[1]}",
+                    "url": f"{PUBLIC_BASE_URL}{path}",
                     "description": cfg.description,
                     "mimeType": "application/json",
+                    "method": "POST",
                 },
                 "accepts": [{
                     "scheme": "exact",
                     "network": X402_NETWORK,
-                    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",  # USDC on Base
+                    "asset": USDC_BASE,
                     "amount": str(int(float(cfg.accepts.price.replace("$", "")) * 1_000_000)),
                     "payTo": X402_WALLET,
+                    "maxTimeoutSeconds": 300,
                 }],
             }
-            for key, cfg in routes.items()
+            for path_key, cfg in routes.items()
+            for path in [path_key.split(" ", 1)[-1]]
         ],
     }
 
