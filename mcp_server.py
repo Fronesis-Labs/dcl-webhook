@@ -60,7 +60,7 @@ mcp = FastMCP(
         allowed_origins=["https://mcp.fronesislabs.com", "http://localhost:8081"],
     ),
 )
-mcp._mcp_server.version = "2.3.0"
+mcp._mcp_server.version = "2.3.1"
 
 # ════════════════════════════════════════════════════════════════════════════════
 # Payments — PayMCP / x402 (mirrors pricing in webhook_server.py)
