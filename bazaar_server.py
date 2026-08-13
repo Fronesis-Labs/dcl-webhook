@@ -181,16 +181,14 @@ _EVALUATE_OUTPUT_SCHEMA = {
 }
 
 
-def _route_config(path: str, price: str, description: str) -> RouteConfig:
+def _route_config(path: str, price: str, description: str, invoke_method: str = "POST") -> RouteConfig:
     extension = declare_discovery_extension(
         input={"response": "example agent output", "agent_id": "agent-123"},
         input_schema=_EVALUATE_INPUT_SCHEMA,
         body_type="json",
         output=OutputConfig(example=_EVALUATE_OUTPUT_EXAMPLE, schema=_EVALUATE_OUTPUT_SCHEMA),
     )
-    # Satisfy startup schema validation; bazaar_resource_server_extension also sets
-    # method from the route key / request at runtime.
-    extension["bazaar"]["info"]["input"]["method"] = "POST"
+    extension["bazaar"]["info"]["input"]["method"] = invoke_method
     return RouteConfig(
         accepts=PaymentOption(
             scheme="exact",
@@ -208,23 +206,43 @@ def _route_config(path: str, price: str, description: str) -> RouteConfig:
     )
 
 
-routes = {
-    "POST /evaluate/fast": _route_config(
-        "/evaluate/fast", "$0.01", "Fast pre-action policy audit of an agent response."
-    ),
-    "POST /evaluate/strict": _route_config(
-        "/evaluate/strict", "$0.05", "Strict pre-action audit with a higher confidence bar."
-    ),
-    "POST /evaluate/jailbreak": _route_config(
-        "/evaluate/jailbreak", "$0.02", "Jailbreak / instruction-adherence detection."
-    ),
-    "POST /evaluate/safety": _route_config(
-        "/evaluate/safety", "$0.01", "Baseline safety policy check."
-    ),
-    "POST /evaluate/quality": _route_config(
-        "/evaluate/quality", "$0.03", "Content quality and drift check."
-    ),
-}
+def _discovery_probe_route_config(path: str, price: str, description: str) -> RouteConfig:
+    """402-only GET entry for Bazaar/validator probes — query discovery, no JSON body."""
+    extension = declare_discovery_extension(
+        input={},
+        input_schema={"properties": {}},
+        output=OutputConfig(example=_EVALUATE_OUTPUT_EXAMPLE, schema=_EVALUATE_OUTPUT_SCHEMA),
+    )
+    extension["bazaar"]["info"]["input"]["method"] = "GET"
+    return RouteConfig(
+        accepts=PaymentOption(
+            scheme="exact",
+            pay_to=X402_WALLET,
+            price=price,
+            network=X402_NETWORK,
+            max_timeout_seconds=300,
+        ),
+        resource=f"{PUBLIC_BASE_URL}{path}",
+        description=description,
+        mime_type="application/json",
+        service_name="DCL Evaluator",
+        tags=["ai-safety", "audit", "compliance"],
+        extensions=extension,
+    )
+
+
+_EVALUATE_PATHS = [
+    ("/evaluate/fast", "$0.01", "Fast pre-action policy audit of an agent response."),
+    ("/evaluate/strict", "$0.05", "Strict pre-action audit with a higher confidence bar."),
+    ("/evaluate/jailbreak", "$0.02", "Jailbreak / instruction-adherence detection."),
+    ("/evaluate/safety", "$0.01", "Baseline safety policy check."),
+    ("/evaluate/quality", "$0.03", "Content quality and drift check."),
+]
+
+routes = {}
+for _path, _price, _desc in _EVALUATE_PATHS:
+    routes[f"POST {_path}"] = _route_config(_path, _price, _desc, invoke_method="POST")
+    routes[f"GET {_path}"] = _discovery_probe_route_config(_path, _price, _desc)
 
 # Payment middleware must run before route handlers (and before any auth middleware).
 app.add_middleware(PaymentMiddlewareASGI, routes=routes, server=server)
@@ -265,6 +283,7 @@ def x402_manifest():
                 }],
             }
             for path_key, cfg in routes.items()
+            if path_key.startswith("POST ")
             for path in [path_key.split(" ", 1)[-1]]
         ],
     }
@@ -347,6 +366,21 @@ async def evaluate_safety(req: EvaluateRequest):
 @app.post("/evaluate/quality", response_model=EvaluateResponse)
 async def evaluate_quality(req: EvaluateRequest):
     return _process_evaluation(req, "content_quality", "quality")
+
+
+@app.get("/evaluate/fast")
+@app.get("/evaluate/strict")
+@app.get("/evaluate/jailbreak")
+@app.get("/evaluate/safety")
+@app.get("/evaluate/quality")
+async def evaluate_get_fallback():
+    # Should normally never execute: unauthenticated GETs are intercepted by
+    # PaymentMiddlewareASGI (returns 402) before reaching here. This only fires if a
+    # request with a valid payment somehow arrives via GET instead of POST.
+    raise HTTPException(
+        status_code=400,
+        detail="This endpoint requires a JSON body — call it with POST, not GET.",
+    )
 
 
 @app.get("/health")
