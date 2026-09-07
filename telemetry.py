@@ -98,7 +98,7 @@ class DecisionEvent:
     prompt_version_hash: str # SHA-256 версии prompt template (содержимое не собирается)
     policy_id: str           # SHA-256 path+content policy файла
     timestamp: float         # Unix timestamp
-    dcl_version: str         # Версия DCL Evaluator
+    dcl_version: str         # Версия DCL Trust Oracle
 
     # ── [3] Decision context ──────────────────────────────────────────────────
     task_type: str           # "classification"|"reasoning"|"summarization"|
