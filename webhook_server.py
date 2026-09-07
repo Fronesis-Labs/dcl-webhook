@@ -9,13 +9,15 @@ secret/PII scanning stay in audit_logic.py (closed). This file remains
 transport/payment plumbing only.
 """
 
+import json
 import os
 import time
 import uuid
-from typing import Optional, List
+from typing import Any, Optional, List, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from fastapi_x402 import init_x402, pay
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -26,6 +28,18 @@ from dcl_core import ChainState, sha256hex
 from audit_logic import (
     BUILTIN_POLICIES, evaluate_policy, get_drift_mode,
     detect_secrets, detect_pii, format_seal,
+)
+from sentinel_db import SentinelDB
+from sentinel_audit import audit_repo_release
+from sentinel_x402 import require_x402_payment, scan_price, SCAN_PRICES
+from sentinel_logic import (
+    apply_webhook_scan,
+    audit_to_dict,
+    check_rate_limit,
+    default_policy,
+    new_webhook_secret,
+    parse_github_release_version,
+    verify_github_signature,
 )
 
 try:
@@ -62,6 +76,7 @@ init_x402(
 )
 
 _chain = ChainState(os.environ.get("DCL_DB_PATH", "dcl_chain.db"))
+_sentinel_db = SentinelDB(os.environ.get("DCL_DB_PATH", "dcl_chain.db"))
 _commit_rate: list[float] = []
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -142,6 +157,28 @@ class PipelineStartResponse(BaseModel):
     scope: str
     expires_at: float
     drift_mode: str
+
+class SentinelRegisterRequest(BaseModel):
+    repo_full_name: str
+    owner_ref: str
+    policy: Optional[dict[str, Any]] = None
+
+class SentinelRegisterResponse(BaseModel):
+    repo_full_name: str
+    webhook_secret: str
+    status: str
+    plan_expires_at: str
+    baseline: dict[str, Any]
+
+class SentinelRenewRequest(BaseModel):
+    repo_full_name: str
+    owner_ref: str
+
+class SentinelScanRequest(BaseModel):
+    repo_full_name: str
+    scan_type: Literal["update_rescan", "deep_scan", "forensic_audit"] = "update_rescan"
+    payer_ref: str = "unknown"
+    version: Optional[str] = None
 
 # ════════════════════════════════════════════════════════════════════════════════
 # Shared Evaluation Logic
@@ -345,11 +382,195 @@ async def audit_decode_deep(request: Request, tx_hash: str):
     }
 
 # ════════════════════════════════════════════════════════════════════════════════
+# DCL Update Sentinel (subscription + pay-per-call monitoring)
+# ════════════════════════════════════════════════════════════════════════════════
+@app.post("/sentinel/register", response_model=SentinelRegisterResponse)
+@limiter.limit("10/minute")
+@pay("$49")
+async def sentinel_register(request: Request, req: SentinelRegisterRequest):
+    if "/" not in req.repo_full_name or req.repo_full_name.count("/") != 1:
+        raise HTTPException(400, "repo_full_name must be owner/repo")
+    if _sentinel_db.get_skill_by_repo(req.repo_full_name):
+        raise HTTPException(409, "Skill already registered — use /sentinel/renew to extend subscription")
+
+    policy = default_policy(req.policy)
+    outcome = await audit_repo_release(
+        req.repo_full_name, _chain, scan_type="update_rescan",
+    )
+    skill = _sentinel_db.create_skill(
+        repo_full_name=req.repo_full_name,
+        owner_ref=req.owner_ref,
+        webhook_secret=new_webhook_secret(),
+        policy=policy,
+        version=outcome.version,
+        verdict=outcome.verdict,
+        score=outcome.score,
+        audited_at=outcome.audited_at,
+    )
+    return SentinelRegisterResponse(
+        repo_full_name=req.repo_full_name,
+        webhook_secret=skill["webhook_secret"],
+        status=skill["status"],
+        plan_expires_at=skill["plan_expires_at"],
+        baseline=audit_to_dict(outcome),
+    )
+
+
+@app.post("/sentinel/webhook/{webhook_secret}")
+@limiter.limit("60/minute")
+async def sentinel_webhook(request: Request, webhook_secret: str):
+    try:
+        check_rate_limit(get_remote_address(request))
+    except ValueError as exc:
+        raise HTTPException(429, str(exc)) from exc
+
+    skill = _sentinel_db.get_skill_by_webhook_secret(webhook_secret)
+    if not skill:
+        raise HTTPException(404, "Unknown webhook secret")
+
+    body = await request.body()
+    if not verify_github_signature(
+        body,
+        webhook_secret,
+        request.headers.get("X-Hub-Signature-256"),
+    ):
+        raise HTTPException(401, "Invalid GitHub webhook signature")
+
+    if not _sentinel_db.subscription_active(skill):
+        await _notify_subscription_lapsed(skill)
+        return {"status": "ignored", "reason": "subscription_inactive"}
+
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(400, "Invalid JSON payload") from exc
+
+    version = parse_github_release_version(payload)
+    if not version:
+        return {"status": "ignored", "reason": "not_a_release_event"}
+
+    result = await apply_webhook_scan(_sentinel_db, skill, _chain, version=version)
+    return {"status": "processed", **result}
+
+
+async def _notify_subscription_lapsed(skill: dict) -> None:
+    from sentinel_logic import notify_owner
+    await notify_owner(
+        skill["owner_ref"],
+        {
+            "event": "subscription_lapsed",
+            "repo": skill["repo_full_name"],
+            "plan_expires_at": skill.get("plan_expires_at"),
+            "action_required": "POST /sentinel/renew",
+        },
+    )
+
+
+@app.post("/sentinel/scan")
+@limiter.limit("30/minute")
+async def sentinel_scan(request: Request):
+    try:
+        check_rate_limit(get_remote_address(request))
+    except ValueError as exc:
+        raise HTTPException(429, str(exc)) from exc
+
+    try:
+        raw = await request.json()
+        req = SentinelScanRequest(**raw)
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid request body: {exc}") from exc
+
+    try:
+        price = scan_price(req.scan_type)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    payment_error = await require_x402_payment(request, price)
+    if payment_error is not None:
+        return payment_error
+
+    outcome = await audit_repo_release(
+        req.repo_full_name,
+        _chain,
+        scan_type=req.scan_type,
+        version=req.version,
+    )
+    skill = _sentinel_db.get_skill_by_repo(req.repo_full_name)
+    if skill:
+        _sentinel_db.update_current(
+            skill["id"],
+            version=outcome.version,
+            verdict=outcome.verdict,
+            score=outcome.score,
+            audited_at=outcome.audited_at,
+        )
+        skill_id = skill["id"]
+    else:
+        _sentinel_db.upsert_current_for_unregistered(
+            req.repo_full_name,
+            version=outcome.version,
+            verdict=outcome.verdict,
+            score=outcome.score,
+            audited_at=outcome.audited_at,
+        )
+        skill_id = _sentinel_db.get_skill_by_repo(req.repo_full_name)["id"]
+
+    amount = float(price.lstrip("$"))
+    _sentinel_db.insert_event(
+        skill_id=skill_id,
+        event_type="rescan_paid",
+        scan_type=req.scan_type,
+        version=outcome.version,
+        verdict=outcome.verdict,
+        score=outcome.score,
+        amount_paid=amount,
+        payer_ref=req.payer_ref,
+    )
+    return {
+        "repo_full_name": req.repo_full_name,
+        "scan_type": req.scan_type,
+        "amount_paid": amount,
+        "audit": audit_to_dict(outcome),
+    }
+
+
+@app.get("/sentinel/status/{repo_full_name:path}")
+@limiter.limit("120/minute")
+async def sentinel_status(request: Request, repo_full_name: str):
+    return _sentinel_db.status_payload(repo_full_name)
+
+
+@app.get("/sentinel/prices")
+def sentinel_prices():
+    return {"scan_types": SCAN_PRICES, "subscription_30d": "$49"}
+
+@app.post("/sentinel/renew")
+@limiter.limit("10/minute")
+@pay("$49")
+async def sentinel_renew(request: Request, req: SentinelRenewRequest):
+    skill = _sentinel_db.get_skill_by_repo(req.repo_full_name)
+    if not skill:
+        raise HTTPException(
+            404, "Skill not registered — use /sentinel/register first"
+        )
+    new_expires = _sentinel_db.renew_subscription(skill["id"], req.owner_ref)
+    return {
+        "repo_full_name": req.repo_full_name,
+        "status": "active",
+        "plan_expires_at": new_expires.isoformat(timespec="seconds"),
+    }
+
+# ════════════════════════════════════════════════════════════════════════════════
 # Utility Routes (no rate limits)
 # ════════════════════════════════════════════════════════════════════════════════
 @app.get("/")
 def root():
-    return {"service": "DCL Evaluator Webhook API (x402)", "version": "2.2.0", "by": "Fronesis Labs"}
+    return {
+        "service": "DCL Evaluator Webhook API (x402)",
+        "version": "2.2.0",
+        "by": "Fronesis Labs",
+        "sentinel": "/sentinel/register",
+    }
 
 @app.get("/health")
 def health():
