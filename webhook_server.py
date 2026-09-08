@@ -683,14 +683,9 @@ def chain_export():
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8080))
-    print("\n╔══════════════════════════════════════════════════════╗")
-<<<<<<< HEAD
-    print("║  DCL Evaluator — Webhook Server v2.2.0                ║")
-    print("║  Fronesis Labs · fronesislabs.com                       ║")
-=======
-    print("║  DCL Trust Oracle — Webhook Server v2.2.0                ║")
-    print("║  Fronesis Labs · fronesislabs.com                       ║")
->>>>>>> 56dc1e836ad45b20929aff12c1843f05a6576cd8
-    print("║  x402 Micropayments + Rate Limiting ENABLED             ║")
-    print("╚══════════════════════════════════════════════════════╝\n")
+    print("╔══════════════════════════════════════════════════════╗")
+    print("║  DCL Trust Oracle — Webhook Server v2.2.0            ║")
+    print("║  Fronesis Labs · fronesislabs.com                    ║")
+    print("║  x402 Micropayments + Rate Limiting ENABLED          ║")
+    print("╚══════════════════════════════════════════════════════╝")
     uvicorn.run("webhook_server:app", host="0.0.0.0", port=port, reload=False)
