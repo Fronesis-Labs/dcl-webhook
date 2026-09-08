@@ -55,7 +55,7 @@ except ImportError:
 
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
-    title="DCL Evaluator — Webhook API (x402)",
+    title="DCL Trust Oracle — Webhook API (x402)",
     description="Deterministic AI audit layer with micropayments. Tamper-evident. Metadata-only.",
     version="2.2.0",
 )
@@ -651,7 +651,7 @@ async def sentinel_renew(request: Request, req: SentinelRenewRequest):
 @app.get("/")
 def root():
     return {
-        "service": "DCL Evaluator Webhook API (x402)",
+        "service": "DCL Trust Oracle Webhook API (x402)",
         "version": "2.2.0",
         "by": "Fronesis Labs",
         "sentinel": "/sentinel/register",
@@ -684,8 +684,13 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8080))
     print("\n╔══════════════════════════════════════════════════════╗")
+<<<<<<< HEAD
     print("║  DCL Evaluator — Webhook Server v2.2.0                ║")
     print("║  Fronesis Labs · fronesislabs.com                       ║")
+=======
+    print("║  DCL Trust Oracle — Webhook Server v2.2.0                ║")
+    print("║  Fronesis Labs · fronesislabs.com                       ║")
+>>>>>>> 56dc1e836ad45b20929aff12c1843f05a6576cd8
     print("║  x402 Micropayments + Rate Limiting ENABLED             ║")
     print("╚══════════════════════════════════════════════════════╝\n")
     uvicorn.run("webhook_server:app", host="0.0.0.0", port=port, reload=False)

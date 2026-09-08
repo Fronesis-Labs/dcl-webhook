@@ -1,5 +1,5 @@
 """
-DCL Evaluator — Bazaar/x402 v2 Server
+DCL Trust Oracle — Bazaar/x402 v2 Server
 Parallel service alongside webhook_server.py (v1). Does NOT replace it.
 
 Uses the official `x402` package (v2 protocol + Bazaar discovery extension)
@@ -422,12 +422,12 @@ async def evaluate_get_fallback():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "DCL Evaluator Bazaar (x402 v2)", "chain_length": len(_chain)}
+    return {"status": "ok", "service": "DCL Trust Oracle Bazaar (x402 v2)", "chain_length": len(_chain)}
 
 
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8083))
-    print("\n=== DCL Evaluator — Bazaar Server (x402 v2) ===")
+    print("\n=== DCL Trust Oracle — Bazaar Server (x402 v2) ===")
     print("=== Fronesis Labs · parallel to webhook_server.py (v1) ===\n")
     uvicorn.run("bazaar_server:app", host="0.0.0.0", port=port, reload=False)
