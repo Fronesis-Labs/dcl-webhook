@@ -105,7 +105,7 @@ Continuous security auditing and release verification for AI Agent Skills and Gi
 
 | REST Endpoint | Price | Description |
 | --- | --- | --- |
-| `POST /sentinel/register` | $49.00 / 30d | Register a skill/repo for continuous monitoring. Runs baseline audit and issues `webhook_secret`. |
+| `POST /sentinel/register` | $49.00 / 30d | Register a skill/repo for continuous monitoring. Requires passing initial baseline audit (`score >= 0.80`; returns `HTTP 422` if failed). Issues `webhook_secret`. |
 | `POST /sentinel/webhook/{webhook_secret}` | Free | GitHub Webhook receiver. Audits new release tags, blocks regressions, and logs tamper-evident events. |
 | `POST /sentinel/scan` | $0.05–$0.50 | Pay-per-call repository audit (`update_rescan`, `deep_scan`, `forensic_audit`). |
 | `GET /sentinel/status/{repo_full_name}` | Free | Query skill security status (`active`, `blocked`, `unregistered`) and last known good version. |
@@ -116,6 +116,7 @@ Continuous security auditing and release verification for AI Agent Skills and Gi
 - **Idempotent Webhook Processing:** Built-in protection against duplicate GitHub delivery retries (`X-GitHub-Delivery` tracking).
 - **Auto-Recovery:** Skills blocked due to security regressions (`status: blocked`) are automatically restored to `active` once a clean, policy-compliant release is published.
 - **Strict Owner Verification:** Subscription renewals require cryptographic signature match with the registered owner's wallet (`owner_payer_ref`).
+- **Baseline Policy Gate:** Registration requires a passing initial audit (`score >= 0.80`). Compromised or failing repositories are rejected immediately (`HTTP 422`) to prevent invalid entitlement setup.
 
 ### Crypto & Trading Compliance (MCP only)
 
