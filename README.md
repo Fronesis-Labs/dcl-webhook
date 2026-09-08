@@ -99,6 +99,24 @@ When something *did* go wrong, reconstruct exactly what happened.
 | `POST /evaluate/secrets` | `dcl_evaluate_secrets` | $0.02 | Secret & credential leak scan. |
 | `POST /evaluate/pii` | `dcl_evaluate_pii` | $0.02 | PII detection scan. |
 
+### DCL Update Sentinel (Continuous Skill Monitoring)
+
+Continuous security auditing and release verification for AI Agent Skills and GitHub repositories. Sentinel monitors code updates via GitHub Webhooks, blocks regressions against your security baseline, and automatically recovers skill status upon clean rescans.
+
+| REST Endpoint | Price | Description |
+| --- | --- | --- |
+| `POST /sentinel/register` | $49.00 / 30d | Register a skill/repo for continuous monitoring. Runs baseline audit and issues `webhook_secret`. |
+| `POST /sentinel/webhook/{webhook_secret}` | Free | GitHub Webhook receiver. Audits new release tags, blocks regressions, and logs tamper-evident events. |
+| `POST /sentinel/scan` | $0.05–$0.50 | Pay-per-call repository audit (`update_rescan`, `deep_scan`, `forensic_audit`). |
+| `GET /sentinel/status/{repo_full_name}` | Free | Query skill security status (`active`, `blocked`, `unregistered`) and last known good version. |
+| `POST /sentinel/renew` | $49.00 / 30d | Extend 30-day monitoring entitlement for a registered skill (owner-verified). |
+| `GET /sentinel/prices` | Free | Returns current price breakdown for Sentinel services. |
+
+#### Key Features of Sentinel:
+- **Idempotent Webhook Processing:** Built-in protection against duplicate GitHub delivery retries (`X-GitHub-Delivery` tracking).
+- **Auto-Recovery:** Skills blocked due to security regressions (`status: blocked`) are automatically restored to `active` once a clean, policy-compliant release is published.
+- **Strict Owner Verification:** Subscription renewals require cryptographic signature match with the registered owner's wallet (`owner_payer_ref`).
+
 ### Crypto & Trading Compliance (MCP only)
 
 These tools are exposed on the live MCP server only (no REST routes in `webhook_server.py`).
@@ -150,18 +168,25 @@ without calling back into this server. See
 or [`dcl-core`](https://github.com/Fronesis-Labs/dcl-core) (Python) for the
 free, offline verification libraries.
 
+
 ## Metering & Settlement
 
-Every paid call above is metered and settled automatically per request, via
-the [x402 protocol](https://x402.org) (USDC on Base) —
-no subscription, no API-key provisioning, no invoicing overhead. This is
-what makes per-call pricing practical at agent scale (an autonomous system
-can make thousands of evaluation calls a day). The REST API is x402-gated
-via `fastapi-x402`; the MCP server via `paymcp` in `Mode.X402`, which pays
-automatically for x402-aware clients and falls back to a guided payment
-link for clients without a wallet configured. Both settle to the same
-wallet, and neither has a bypass path — an unpaid call simply gets no
-verdict.
+Every paid call above is metered and settled automatically via the
+[x402 protocol](https://x402.org) (USDC on Base).
+
+We support two payment models:
+- **Per-Call Micropayments** ($0.01 – $0.50) for instant, on-demand evaluations.
+- **30-Day Recurring Entitlements** ($49.00) for continuous skill monitoring via DCL Update Sentinel.
+
+This design eliminates API-key provisioning and invoicing overhead.
+Per-call pricing makes large-scale agent operations practical
+(an autonomous system can make thousands of evaluation calls a day).
+
+The REST API is x402-gated via `fastapi-x402`; the MCP server uses
+`paymcp` in `Mode.X402`, paying automatically for x402-aware clients and
+falling back to a guided payment link for clients without a configured wallet.
+Both settle to the same wallet, and neither has a bypass path —
+an unpaid call simply receives no verdict.
 
 ## License
 
