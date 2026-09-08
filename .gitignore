@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .env
+cdp_api_key.json
 .mcp-registry/
 mcp-publisher.exe
 venv/

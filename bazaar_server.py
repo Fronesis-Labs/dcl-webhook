@@ -28,6 +28,7 @@ import os
 import json
 import time
 import uuid
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -35,6 +36,7 @@ load_dotenv(override=True)
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from pydantic import BaseModel
 
 from x402 import x402ResourceServer
@@ -58,8 +60,16 @@ USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 PAYAI_FACILITATOR_URL = "https://facilitator.payai.network"
 
 app = FastAPI(
-    title="DCL Evaluator — Bazaar API (x402 v2)",
-    description="Deterministic AI audit layer with x402 v2 micropayments, Bazaar-discoverable.",
+    title="DCL Trust Oracle — AI Agent Safety Evaluator",
+    description=(
+        "Pre-action safety gate for AI agents. Evaluates a proposed agent response or "
+        "action before execution and returns a structured verdict (COMMIT / NO_COMMIT) "
+        "with confidence, reasoning, and tamper-evident audit metadata. Use it before tool "
+        "calls, code execution, financial workflows, or other high-impact actions to detect "
+        "jailbreaks, prompt injection, unsafe instructions, policy violations, and output "
+        "drift. Choose from fast, safety, jailbreak, quality, and strict evaluation modes. "
+        "Pay per request via x402 — no API key or subscription required."
+    ),
     version="1.0.0",
 )
 app.add_middleware(
@@ -71,6 +81,23 @@ app.add_middleware(
 
 _chain = ChainState(os.environ.get("DCL_DB_PATH", "dcl_chain_bazaar.db"))
 _commit_rate: list = []
+
+# ════════════════════════════════════════════════════════════════════════════════
+# Human-facing landing page (GET / only — does not touch /evaluate/* payment routes)
+# ════════════════════════════════════════════════════════════════════════════════
+_STATIC_DIR = Path(__file__).parent / "static"
+
+@app.get("/", include_in_schema=False)
+async def landing():
+    return HTMLResponse((_STATIC_DIR / "index.html").read_text(encoding="utf-8"))
+
+@app.get("/robots.txt", include_in_schema=False)
+async def robots():
+    return PlainTextResponse((_STATIC_DIR / "robots.txt").read_text(encoding="utf-8"))
+
+@app.get("/sitemap.xml", include_in_schema=False)
+async def sitemap():
+    return Response((_STATIC_DIR / "sitemap.xml").read_text(encoding="utf-8"), media_type="application/xml")
 
 # ════════════════════════════════════════════════════════════════════════════════
 # x402 v2 resource server setup
@@ -181,7 +208,7 @@ _EVALUATE_OUTPUT_SCHEMA = {
 }
 
 
-def _route_config(path: str, price: str, description: str, invoke_method: str = "POST") -> RouteConfig:
+def _route_config(path: str, price: str, description: str, tags: list, invoke_method: str = "POST") -> RouteConfig:
     extension = declare_discovery_extension(
         input={"response": "example agent output", "agent_id": "agent-123"},
         input_schema=_EVALUATE_INPUT_SCHEMA,
@@ -200,13 +227,13 @@ def _route_config(path: str, price: str, description: str, invoke_method: str = 
         resource=f"{PUBLIC_BASE_URL}{path}",
         description=description,
         mime_type="application/json",
-        service_name="DCL Evaluator",
-        tags=["ai-safety", "audit", "compliance"],
+        service_name="DCL Trust Oracle — AI Agent Safety Evaluator",
+        tags=tags,
         extensions=extension,
     )
 
 
-def _discovery_probe_route_config(path: str, price: str, description: str) -> RouteConfig:
+def _discovery_probe_route_config(path: str, price: str, description: str, tags: list) -> RouteConfig:
     """402-only GET entry for Bazaar/validator probes — query discovery, no JSON body."""
     extension = declare_discovery_extension(
         input={},
@@ -225,24 +252,34 @@ def _discovery_probe_route_config(path: str, price: str, description: str) -> Ro
         resource=f"{PUBLIC_BASE_URL}{path}",
         description=description,
         mime_type="application/json",
-        service_name="DCL Evaluator",
-        tags=["ai-safety", "audit", "compliance"],
+        service_name="DCL Trust Oracle — AI Agent Safety Evaluator",
+        tags=tags,
         extensions=extension,
     )
 
 
 _EVALUATE_PATHS = [
-    ("/evaluate/fast", "$0.01", "Fast pre-action policy audit of an agent response."),
-    ("/evaluate/strict", "$0.05", "Strict pre-action audit with a higher confidence bar."),
-    ("/evaluate/jailbreak", "$0.02", "Jailbreak / instruction-adherence detection."),
-    ("/evaluate/safety", "$0.01", "Baseline safety policy check."),
-    ("/evaluate/quality", "$0.03", "Content quality and drift check."),
+    ("/evaluate/fast", "$0.01",
+     "Low-latency pre-action screening for routine agent responses and tool-call decisions.",
+     ["ai-agent-safety", "tool-call-guardrail", "llm-evaluation"]),
+    ("/evaluate/strict", "$0.05",
+     "Higher-confidence evaluation for high-impact, sensitive, or difficult-to-reverse agent actions.",
+     ["ai-agent-safety", "policy-enforcement", "audit-trail", "llm-evaluation"]),
+    ("/evaluate/jailbreak", "$0.02",
+     "Detect jailbreaks, prompt injection, and instruction conflicts before the agent follows them.",
+     ["jailbreak-detection", "prompt-injection", "ai-agent-safety"]),
+    ("/evaluate/safety", "$0.01",
+     "Baseline safety screening for harmful, unsafe, or policy-violating agent outputs.",
+     ["ai-agent-safety", "policy-enforcement", "audit-trail"]),
+    ("/evaluate/quality", "$0.03",
+     "Check agent outputs for quality issues, inconsistency, and behavioral drift.",
+     ["output-quality", "llm-evaluation", "ai-agent-safety"]),
 ]
 
 routes = {}
-for _path, _price, _desc in _EVALUATE_PATHS:
-    routes[f"POST {_path}"] = _route_config(_path, _price, _desc, invoke_method="POST")
-    routes[f"GET {_path}"] = _discovery_probe_route_config(_path, _price, _desc)
+for _path, _price, _desc, _tags in _EVALUATE_PATHS:
+    routes[f"POST {_path}"] = _route_config(_path, _price, _desc, _tags, invoke_method="POST")
+    routes[f"GET {_path}"] = _discovery_probe_route_config(_path, _price, _desc, _tags)
 
 # Payment middleware must run before route handlers (and before any auth middleware).
 app.add_middleware(PaymentMiddlewareASGI, routes=routes, server=server)
