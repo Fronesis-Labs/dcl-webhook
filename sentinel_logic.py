@@ -93,6 +93,7 @@ async def apply_webhook_scan(
     chain,
     *,
     version: Optional[str] = None,
+    delivery_id: Optional[str] = None,
 ) -> dict[str, Any]:
     repo = skill["repo_full_name"]
     outcome = await audit_repo_release(repo, chain, scan_type="update_rescan", version=version)
@@ -109,31 +110,35 @@ async def apply_webhook_scan(
 
     if is_regression(outcome.verdict, outcome.score, policy):
         db.block_skill(skill["id"])
-        db.insert_event(
+        inserted = db.insert_event(
             skill_id=skill["id"],
             event_type="regression_blocked",
             scan_type="update_rescan",
             version=outcome.version,
             verdict=outcome.verdict,
             score=outcome.score,
+            delivery_id=delivery_id,
         )
-        await notify_owner(
-            skill["owner_ref"],
-            {
-                "event": "regression_blocked",
-                "repo": repo,
-                "version": outcome.version,
-                "verdict": outcome.verdict,
-                "score": outcome.score,
-                "baseline_version": skill.get("immutable_baseline_version"),
-                "last_known_good_version": skill.get("last_known_good_version"),
-            },
-        )
+        if inserted:
+            await notify_owner(
+                skill["owner_ref"],
+                {
+                    "event": "regression_blocked",
+                    "repo": repo,
+                    "version": outcome.version,
+                    "verdict": outcome.verdict,
+                    "score": outcome.score,
+                    "baseline_version": skill.get("immutable_baseline_version"),
+                    "last_known_good_version": skill.get("last_known_good_version"),
+                },
+            )
         return {
             "action": "blocked",
             "regression": True,
             "audit": audit_to_dict(outcome),
         }
+
+    was_blocked = skill.get("status") == "blocked"
 
     db.promote_last_known_good(
         skill["id"],
@@ -142,16 +147,24 @@ async def apply_webhook_scan(
         score=outcome.score,
         audited_at=now,
     )
+
+    if was_blocked:
+        # recover_skill() is the only normal path that clears a security
+        # block — a clean rescan after regression must explicitly recover
+        # the skill, or it would stay blocked forever.
+        db.recover_skill(skill["id"])
+
     db.insert_event(
         skill_id=skill["id"],
-        event_type="rescan_auto",
+        event_type="rescan_recovered" if was_blocked else "rescan_auto",
         scan_type="update_rescan",
         version=outcome.version,
         verdict=outcome.verdict,
         score=outcome.score,
+        delivery_id=delivery_id,
     )
     return {
-        "action": "promoted",
+        "action": "recovered" if was_blocked else "promoted",
         "regression": False,
         "audit": audit_to_dict(outcome),
     }

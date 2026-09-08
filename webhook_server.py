@@ -383,30 +383,68 @@ async def audit_decode_deep(request: Request, tx_hash: str):
 
 # ════════════════════════════════════════════════════════════════════════════════
 # DCL Update Sentinel (subscription + pay-per-call monitoring)
-# ════════════════════════════════════════════════════════════════════════════════
+
+async def _require_sentinel_subscription_payment(request: Request):
+    """Verify Sentinel's $49 subscription payment and expose verified payer."""
+    payment_error = await require_x402_payment(request, 49.0)
+    if payment_error is not None:
+        return payment_error
+    payer = getattr(request.state, "payment_payer", None)
+    if not payer:
+        raise HTTPException(402, "Verified payment payer is unavailable")
+    return None
+
+
 @app.post("/sentinel/register", response_model=SentinelRegisterResponse)
 @limiter.limit("10/minute")
-@pay("$49")
 async def sentinel_register(request: Request, req: SentinelRegisterRequest):
     if "/" not in req.repo_full_name or req.repo_full_name.count("/") != 1:
         raise HTTPException(400, "repo_full_name must be owner/repo")
+
+    payment_error = await _require_sentinel_subscription_payment(request)
+    if payment_error is not None:
+        return payment_error
+    payer_ref = request.state.payment_payer
+
     if _sentinel_db.get_skill_by_repo(req.repo_full_name):
-        raise HTTPException(409, "Skill already registered — use /sentinel/renew to extend subscription")
+        raise HTTPException(
+            409,
+            "Skill already registered — use /sentinel/renew to extend subscription",
+        )
 
     policy = default_policy(req.policy)
     outcome = await audit_repo_release(
-        req.repo_full_name, _chain, scan_type="update_rescan",
+        req.repo_full_name,
+        _chain,
+        scan_type="update_rescan",
     )
+
+    threshold = policy.get("score_threshold", 0.80)
+    if outcome.verdict == "FAIL" or outcome.score < threshold:
+        raise HTTPException(
+            422,
+            {
+                "error": "initial_audit_failed",
+                "message": "Initial audit does not satisfy Sentinel policy; registration refused",
+                "audit": audit_to_dict(outcome),
+                "score_threshold": threshold,
+            },
+        )
+
     skill = _sentinel_db.create_skill(
         repo_full_name=req.repo_full_name,
         owner_ref=req.owner_ref,
+        owner_payer_ref=payer_ref,
         webhook_secret=new_webhook_secret(),
         policy=policy,
         version=outcome.version,
         verdict=outcome.verdict,
         score=outcome.score,
         audited_at=outcome.audited_at,
+        payer_ref=payer_ref,
+        amount_paid=49.0,
     )
+
     return SentinelRegisterResponse(
         repo_full_name=req.repo_full_name,
         webhook_secret=skill["webhook_secret"],
@@ -445,11 +483,31 @@ async def sentinel_webhook(request: Request, webhook_secret: str):
     except json.JSONDecodeError as exc:
         raise HTTPException(400, "Invalid JSON payload") from exc
 
+    payload_repo = (payload.get("repository") or {}).get("full_name")
+    if not payload_repo:
+        raise HTTPException(400, "Webhook payload missing repository.full_name")
+    if payload_repo != skill["repo_full_name"]:
+        raise HTTPException(403, "Webhook repository does not match registered skill")
+
+    delivery_id = request.headers.get("X-GitHub-Delivery")
+    if delivery_id and _sentinel_db.event_exists(delivery_id):
+        return {
+            "status": "ignored",
+            "reason": "duplicate_delivery",
+            "delivery_id": delivery_id,
+        }
+
     version = parse_github_release_version(payload)
     if not version:
         return {"status": "ignored", "reason": "not_a_release_event"}
 
-    result = await apply_webhook_scan(_sentinel_db, skill, _chain, version=version)
+    result = await apply_webhook_scan(
+        _sentinel_db,
+        skill,
+        _chain,
+        version=version,
+        delivery_id=delivery_id,
+    )
     return {"status": "processed", **result}
 
 
@@ -489,12 +547,17 @@ async def sentinel_scan(request: Request):
     if payment_error is not None:
         return payment_error
 
+    payer_ref = getattr(request.state, "payment_payer", None)
+    if not payer_ref:
+        raise HTTPException(402, "Verified payment payer is unavailable")
+
     outcome = await audit_repo_release(
         req.repo_full_name,
         _chain,
         scan_type=req.scan_type,
         version=req.version,
     )
+
     skill = _sentinel_db.get_skill_by_repo(req.repo_full_name)
     if skill:
         _sentinel_db.update_current(
@@ -524,7 +587,7 @@ async def sentinel_scan(request: Request):
         verdict=outcome.verdict,
         score=outcome.score,
         amount_paid=amount,
-        payer_ref=req.payer_ref,
+        payer_ref=payer_ref,
     )
     return {
         "repo_full_name": req.repo_full_name,
@@ -544,23 +607,45 @@ async def sentinel_status(request: Request, repo_full_name: str):
 def sentinel_prices():
     return {"scan_types": SCAN_PRICES, "subscription_30d": "$49"}
 
+
 @app.post("/sentinel/renew")
 @limiter.limit("10/minute")
-@pay("$49")
 async def sentinel_renew(request: Request, req: SentinelRenewRequest):
     skill = _sentinel_db.get_skill_by_repo(req.repo_full_name)
     if not skill:
         raise HTTPException(
             404, "Skill not registered — use /sentinel/register first"
         )
-    new_expires = _sentinel_db.renew_subscription(skill["id"], req.owner_ref)
+
+    payment_error = await _require_sentinel_subscription_payment(request)
+    if payment_error is not None:
+        return payment_error
+    payer_ref = request.state.payment_payer
+
+    registered_payer = skill.get("owner_payer_ref")
+    if not registered_payer:
+        raise HTTPException(
+            409,
+            "Legacy Sentinel registration has no verified owner payer; renewal is unavailable",
+        )
+
+    if registered_payer.lower() != payer_ref.lower():
+        raise HTTPException(403, "Payment payer is not the registered skill owner")
+
+    new_expires = _sentinel_db.renew_subscription(
+        skill["id"],
+        payer_ref,
+        amount_paid=49.0,
+    )
+    refreshed = _sentinel_db.get_skill_by_repo(req.repo_full_name)
+
     return {
         "repo_full_name": req.repo_full_name,
-        "status": "active",
+        "status": refreshed["status"],
         "plan_expires_at": new_expires.isoformat(timespec="seconds"),
     }
 
-# ════════════════════════════════════════════════════════════════════════════════
+
 # Utility Routes (no rate limits)
 # ════════════════════════════════════════════════════════════════════════════════
 @app.get("/")
@@ -600,7 +685,7 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     print("\n╔══════════════════════════════════════════════════════╗")
     print("║  DCL Evaluator — Webhook Server v2.2.0                ║")
-    print("║  Fronesis Labs · fronesislabs.io                       ║")
+    print("║  Fronesis Labs · fronesislabs.com                       ║")
     print("║  x402 Micropayments + Rate Limiting ENABLED             ║")
     print("╚══════════════════════════════════════════════════════╝\n")
     uvicorn.run("webhook_server:app", host="0.0.0.0", port=port, reload=False)
