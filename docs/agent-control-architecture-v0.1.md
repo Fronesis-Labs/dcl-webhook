@@ -179,3 +179,10 @@ event type.
 - `AgentControlOrchestrator.handle(proposal) -> ControlFlowResult`
 - `ControlFlowResult.outcome`: `EXECUTED` \| `LOCAL_BLOCK` \| `DCL_NO_COMMIT` \| `DCL_UNAVAILABLE`
 - Injected ports: `LocalHardPolicy`, `DCLGuard`, `ActionExecutor`, optional `BehaviorSignalProvider`, `create_audit_event`
+
+## LangChain tool-call proof (local)
+
+A LangChain tool call is accepted by Agent Control as a proposed action. DCL
+returns COMMIT or NO_COMMIT. The executor runs only after COMMIT. A canonical
+audit event is created for that DCL decision. The current real side effect is
+a local file write. This is a local proof, not a production proof.
