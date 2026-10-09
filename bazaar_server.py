@@ -211,7 +211,7 @@ _EVALUATE_FAST_INPUT_SCHEMA = {
         },
         "request_digest": {
             "type": "string",
-            "pattern": "^[0-9a-fA-F]{64}$",
+            "pattern": _REQUEST_DIGEST_PATTERN.pattern,
             "description": "Caller-supplied SHA-256 hex. The response returns this exact string.",
         },
     },
@@ -223,7 +223,6 @@ _EVALUATE_OUTPUT_EXAMPLE = {
     "reason": "All policy checks passed",
     "tx_hash": "0xabc123...",
     "chain_index": 42,
-    "request_digest": _DISCOVERY_DIGEST_EXAMPLE,
 }
 _EVALUATE_OUTPUT_SCHEMA = {
     "type": "object",
@@ -238,13 +237,24 @@ _EVALUATE_OUTPUT_SCHEMA = {
         "timestamp": {"type": "number"},
         "drift_mode": {"type": "string"},
         "drift_score": {"type": "number"},
+    },
+    "required": ["verdict", "confidence", "reason", "tx_hash", "chain_index"],
+}
+_EVALUATE_FAST_OUTPUT_EXAMPLE = {
+    **_EVALUATE_OUTPUT_EXAMPLE,
+    "request_digest": _DISCOVERY_DIGEST_EXAMPLE,
+}
+_EVALUATE_FAST_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        **_EVALUATE_OUTPUT_SCHEMA["properties"],
         "request_digest": {
             "type": "string",
-            "pattern": "^[0-9a-fA-F]{64}$",
+            "pattern": _REQUEST_DIGEST_PATTERN.pattern,
             "description": "Exact request_digest from the request.",
         },
     },
-    "required": ["verdict", "confidence", "reason", "tx_hash", "chain_index", "request_digest"],
+    "required": [*_EVALUATE_OUTPUT_SCHEMA["required"], "request_digest"],
 }
 
 
@@ -256,12 +266,17 @@ def _route_config(
     invoke_method: str = "POST",
     input_example: Optional[dict] = None,
     input_schema: Optional[dict] = None,
+    output_example: Optional[dict] = None,
+    output_schema: Optional[dict] = None,
 ) -> RouteConfig:
     extension = declare_discovery_extension(
         input=input_example if input_example is not None else _EVALUATE_INPUT_EXAMPLE,
         input_schema=input_schema if input_schema is not None else _EVALUATE_INPUT_SCHEMA,
         body_type="json",
-        output=OutputConfig(example=_EVALUATE_OUTPUT_EXAMPLE, schema=_EVALUATE_OUTPUT_SCHEMA),
+        output=OutputConfig(
+            example=output_example if output_example is not None else _EVALUATE_OUTPUT_EXAMPLE,
+            schema=output_schema if output_schema is not None else _EVALUATE_OUTPUT_SCHEMA,
+        ),
     )
     extension["bazaar"]["info"]["input"]["method"] = invoke_method
     return RouteConfig(
@@ -335,6 +350,8 @@ for _path, _price, _desc, _tags in _EVALUATE_PATHS:
             invoke_method="POST",
             input_example=_EVALUATE_FAST_INPUT_EXAMPLE,
             input_schema=_EVALUATE_FAST_INPUT_SCHEMA,
+            output_example=_EVALUATE_FAST_OUTPUT_EXAMPLE,
+            output_schema=_EVALUATE_FAST_OUTPUT_SCHEMA,
         )
     else:
         routes[f"POST {_path}"] = _route_config(_path, _price, _desc, _tags, invoke_method="POST")
@@ -410,11 +427,27 @@ class EvaluateResponse(BaseModel):
     request_digest: Optional[str] = None
 
 
+def _digest_is_exact(value: Optional[str]) -> bool:
+    return isinstance(value, str) and _REQUEST_DIGEST_PATTERN.fullmatch(value) is not None
+
+
+def _require_fast_contract(req: EvaluateRequest) -> None:
+    """Reject a fast request before evaluation or any audit-chain write.
+
+    ``task_type`` must be exactly ``http_side_effect``. ``request_digest`` must
+    be the caller's 64 hex characters. Nothing here rewrites either field.
+    """
+    if req.task_type != "http_side_effect":
+        raise HTTPException(status_code=400, detail="task_type must be http_side_effect")
+    if not _digest_is_exact(req.request_digest):
+        raise HTTPException(status_code=400, detail="request_digest must be 64 hex characters")
+
+
 def _validated_request_digest(value: Optional[str]) -> Optional[str]:
     """Return the caller digest unchanged, or reject a value that is not 64 hex chars."""
     if value is None:
         return None
-    if not isinstance(value, str) or _REQUEST_DIGEST_PATTERN.fullmatch(value) is None:
+    if not _digest_is_exact(value):
         raise HTTPException(status_code=400, detail="request_digest must be 64 hex characters")
     return value
 
@@ -464,6 +497,7 @@ def _process_evaluation(req: EvaluateRequest, policy_name: str, task_type: str) 
 # ════════════════════════════════════════════════════════════════════════════════
 @app.post("/evaluate/fast", response_model=EvaluateResponse)
 async def evaluate_fast(req: EvaluateRequest):
+    _require_fast_contract(req)
     return _process_evaluation(req, "default", "fast")
 
 
