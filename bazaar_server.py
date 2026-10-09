@@ -26,6 +26,7 @@ Run (does not touch dcl-evaluator/dcl-webhook — separate port, separate servic
 """
 import os
 import json
+import re
 import time
 import uuid
 from pathlib import Path
@@ -175,13 +176,46 @@ server = x402ResourceServer(facilitator)
 register_exact_evm_server(server, networks=X402_NETWORK)
 server.register_extension(bazaar_resource_server_extension)
 
-# Shared example schema for all /evaluate/* routes (they all take the same body shape)
+# Illustrative digest for the Discovery example. Not a hash of a live action.
+_DISCOVERY_DIGEST_EXAMPLE = "ab" * 32
+_REQUEST_DIGEST_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+
+# Shared example schema for /evaluate/* routes other than the fast side-effect contract.
+_EVALUATE_INPUT_EXAMPLE = {
+    "response": "example agent output",
+    "agent_id": "agent-123",
+}
 _EVALUATE_INPUT_SCHEMA = {
     "properties": {
         "response": {"type": "string", "description": "Agent/LLM response text to audit"},
         "agent_id": {"type": "string", "description": "Identifier of the agent"},
     },
     "required": ["response", "agent_id"],
+}
+# POST /evaluate/fast publishes the contract dcl-core run_flow reads.
+_EVALUATE_FAST_INPUT_EXAMPLE = {
+    "response": "example agent output",
+    "agent_id": "agent-123",
+    "task_type": "http_side_effect",
+    "request_digest": _DISCOVERY_DIGEST_EXAMPLE,
+}
+_EVALUATE_FAST_INPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "response": {"type": "string", "description": "Agent/LLM response text to audit"},
+        "agent_id": {"type": "string", "description": "Identifier of the agent"},
+        "task_type": {
+            "type": "string",
+            "const": "http_side_effect",
+            "description": "Supported value for a DCL HTTP side-effect evaluation.",
+        },
+        "request_digest": {
+            "type": "string",
+            "pattern": _REQUEST_DIGEST_PATTERN.pattern,
+            "description": "Caller-supplied SHA-256 hex. The response returns this exact string.",
+        },
+    },
+    "required": ["response", "agent_id", "task_type", "request_digest"],
 }
 _EVALUATE_OUTPUT_EXAMPLE = {
     "verdict": "COMMIT",
@@ -206,14 +240,43 @@ _EVALUATE_OUTPUT_SCHEMA = {
     },
     "required": ["verdict", "confidence", "reason", "tx_hash", "chain_index"],
 }
+_EVALUATE_FAST_OUTPUT_EXAMPLE = {
+    **_EVALUATE_OUTPUT_EXAMPLE,
+    "request_digest": _DISCOVERY_DIGEST_EXAMPLE,
+}
+_EVALUATE_FAST_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        **_EVALUATE_OUTPUT_SCHEMA["properties"],
+        "request_digest": {
+            "type": "string",
+            "pattern": _REQUEST_DIGEST_PATTERN.pattern,
+            "description": "Exact request_digest from the request.",
+        },
+    },
+    "required": [*_EVALUATE_OUTPUT_SCHEMA["required"], "request_digest"],
+}
 
 
-def _route_config(path: str, price: str, description: str, tags: list, invoke_method: str = "POST") -> RouteConfig:
+def _route_config(
+    path: str,
+    price: str,
+    description: str,
+    tags: list,
+    invoke_method: str = "POST",
+    input_example: Optional[dict] = None,
+    input_schema: Optional[dict] = None,
+    output_example: Optional[dict] = None,
+    output_schema: Optional[dict] = None,
+) -> RouteConfig:
     extension = declare_discovery_extension(
-        input={"response": "example agent output", "agent_id": "agent-123"},
-        input_schema=_EVALUATE_INPUT_SCHEMA,
+        input=input_example if input_example is not None else _EVALUATE_INPUT_EXAMPLE,
+        input_schema=input_schema if input_schema is not None else _EVALUATE_INPUT_SCHEMA,
         body_type="json",
-        output=OutputConfig(example=_EVALUATE_OUTPUT_EXAMPLE, schema=_EVALUATE_OUTPUT_SCHEMA),
+        output=OutputConfig(
+            example=output_example if output_example is not None else _EVALUATE_OUTPUT_EXAMPLE,
+            schema=output_schema if output_schema is not None else _EVALUATE_OUTPUT_SCHEMA,
+        ),
     )
     extension["bazaar"]["info"]["input"]["method"] = invoke_method
     return RouteConfig(
@@ -278,7 +341,20 @@ _EVALUATE_PATHS = [
 
 routes = {}
 for _path, _price, _desc, _tags in _EVALUATE_PATHS:
-    routes[f"POST {_path}"] = _route_config(_path, _price, _desc, _tags, invoke_method="POST")
+    if _path == "/evaluate/fast":
+        routes[f"POST {_path}"] = _route_config(
+            _path,
+            _price,
+            _desc,
+            _tags,
+            invoke_method="POST",
+            input_example=_EVALUATE_FAST_INPUT_EXAMPLE,
+            input_schema=_EVALUATE_FAST_INPUT_SCHEMA,
+            output_example=_EVALUATE_FAST_OUTPUT_EXAMPLE,
+            output_schema=_EVALUATE_FAST_OUTPUT_SCHEMA,
+        )
+    else:
+        routes[f"POST {_path}"] = _route_config(_path, _price, _desc, _tags, invoke_method="POST")
     routes[f"GET {_path}"] = _discovery_probe_route_config(_path, _price, _desc, _tags)
 
 # Payment middleware must run before route handlers (and before any auth middleware).
@@ -334,6 +410,7 @@ class EvaluateRequest(BaseModel):
     policy: Optional[str] = "default"
     agent_id: Optional[str] = "unknown"
     task_type: Optional[str] = "unknown"
+    request_digest: Optional[str] = None
 
 
 class EvaluateResponse(BaseModel):
@@ -347,11 +424,48 @@ class EvaluateResponse(BaseModel):
     timestamp: float
     drift_mode: str
     drift_score: float
+    request_digest: Optional[str] = None
+
+
+def _digest_is_exact(value: Optional[str]) -> bool:
+    return isinstance(value, str) and _REQUEST_DIGEST_PATTERN.fullmatch(value) is not None
+
+
+def _require_fast_contract(req: EvaluateRequest) -> None:
+    """Reject a fast request before evaluation or any audit-chain write.
+
+    ``task_type`` must be exactly ``http_side_effect``. ``request_digest`` must
+    be the caller's 64 hex characters. Nothing here rewrites either field.
+    """
+    if req.task_type != "http_side_effect":
+        raise HTTPException(status_code=400, detail="task_type must be http_side_effect")
+    if not _digest_is_exact(req.request_digest):
+        raise HTTPException(status_code=400, detail="request_digest must be 64 hex characters")
+
+
+def _validated_request_digest(value: Optional[str]) -> Optional[str]:
+    """Return the caller digest unchanged, or reject a value that is not 64 hex chars."""
+    if value is None:
+        return None
+    if not _digest_is_exact(value):
+        raise HTTPException(status_code=400, detail="request_digest must be 64 hex characters")
+    return value
+
+
+def _recorded_task_type(supplied: Optional[str], tier: str) -> str:
+    """Use a client task_type when one was sent. Keep the tier when it was omitted."""
+    if supplied is None or supplied == "unknown":
+        return tier
+    if not isinstance(supplied, str) or supplied == "" or supplied != supplied.strip():
+        raise HTTPException(status_code=400, detail="task_type must be a non-empty string")
+    return supplied
 
 
 def _process_evaluation(req: EvaluateRequest, policy_name: str, task_type: str) -> EvaluateResponse:
     if not req.response or not req.response.strip():
         raise HTTPException(status_code=400, detail="response field is required")
+    digest = _validated_request_digest(req.request_digest)
+    recorded_task_type = _recorded_task_type(req.task_type, task_type)
 
     policy_yaml = BUILTIN_POLICIES.get(policy_name, BUILTIN_POLICIES["default"])
     verdict, confidence, reason, policy_version = evaluate_policy(req.response, policy_yaml)
@@ -361,7 +475,7 @@ def _process_evaluation(req: EvaluateRequest, policy_name: str, task_type: str) 
 
     tx_hash, chain_idx = _chain.append(
         verdict=verdict, input_hash=input_hash, policy_hash=policy_hash,
-        agent_id=req.agent_id, reason=reason, confidence=confidence, task_type=task_type,
+        agent_id=req.agent_id, reason=reason, confidence=confidence, task_type=recorded_task_type,
     )
 
     _commit_rate.append(1.0 if verdict == "COMMIT" else 0.0)
@@ -374,6 +488,7 @@ def _process_evaluation(req: EvaluateRequest, policy_name: str, task_type: str) 
         tx_hash=tx_hash, chain_index=chain_idx, input_hash=input_hash,
         policy_version=policy_version, timestamp=time.time(),
         drift_mode=drift_mode, drift_score=drift_score,
+        request_digest=digest,
     )
 
 
@@ -382,6 +497,7 @@ def _process_evaluation(req: EvaluateRequest, policy_name: str, task_type: str) 
 # ════════════════════════════════════════════════════════════════════════════════
 @app.post("/evaluate/fast", response_model=EvaluateResponse)
 async def evaluate_fast(req: EvaluateRequest):
+    _require_fast_contract(req)
     return _process_evaluation(req, "default", "fast")
 
 
