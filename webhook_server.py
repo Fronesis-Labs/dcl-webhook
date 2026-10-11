@@ -31,7 +31,13 @@ from audit_logic import (
 )
 from sentinel_db import SentinelDB
 from sentinel_audit import audit_repo_release
-from sentinel_x402 import require_x402_payment, scan_price, SCAN_PRICES
+from sentinel_x402 import (
+    require_x402_payment,
+    verify_x402_payment,
+    settle_x402_payment,
+    scan_price,
+    SCAN_PRICES,
+)
 from sentinel_logic import (
     apply_webhook_scan,
     audit_to_dict,
@@ -49,9 +55,9 @@ except ImportError:
         def record_decision(self, **kwargs): pass
     def get_collector(): return DummyCollector()
 
-# ════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 # App & x402 & Rate Limiting
-# ════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 
 limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(
@@ -79,9 +85,9 @@ _chain = ChainState(os.environ.get("DCL_DB_PATH", "dcl_chain.db"))
 _sentinel_db = SentinelDB(os.environ.get("DCL_DB_PATH", "dcl_chain.db"))
 _commit_rate: list[float] = []
 
-# ════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 # Request / Response Models
-# ════════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════[...]
 
 class EvaluateRequest(BaseModel):
     response: str
@@ -180,9 +186,9 @@ class SentinelScanRequest(BaseModel):
     payer_ref: str = "unknown"
     version: Optional[str] = None
 
-# ════════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════[...]
 # Shared Evaluation Logic
-# ════════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════[...]
 
 def _process_evaluation(req: EvaluateRequest, tier: str) -> EvaluateResponse:
     start = time.time()
@@ -268,9 +274,9 @@ def _process_scan(req: ScanRequest, detector, policy_label: str) -> ScanResponse
         seal_text=seal["seal_text"], verify_url=seal["verify_url"],
     )
 
-# ════════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════[...]
 # PRE-ACTION & POST-ACTION ROUTES (with rate limits)
-# ════════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════[...]
 @app.post("/evaluate/fast", response_model=EvaluateResponse)
 @limiter.limit("100/minute")
 @pay("$0.01")
@@ -381,7 +387,7 @@ async def audit_decode_deep(request: Request, tx_hash: str):
         "seal_text": seal["seal_text"], "verify_url": seal["verify_url"],
     }
 
-# ════════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════[...]
 # DCL Update Sentinel (subscription + pay-per-call monitoring)
 
 async def _require_sentinel_subscription_payment(request: Request):
@@ -611,17 +617,34 @@ def sentinel_prices():
 @app.post("/sentinel/renew")
 @limiter.limit("10/minute")
 async def sentinel_renew(request: Request, req: SentinelRenewRequest):
+    """
+    Renew a Sentinel subscription.
+    
+    Order:
+    1. Verify payment → extract payer.
+    2. Check payer is not None (reject if missing).
+    3. Check owner_payer_ref is not None (reject if missing).
+    4. Check payer matches owner_payer_ref (reject with 403 if mismatch).
+    5. Settle payment.
+    6. Extend subscription only if settlement succeeds.
+    """
     skill = _sentinel_db.get_skill_by_repo(req.repo_full_name)
     if not skill:
         raise HTTPException(
             404, "Skill not registered — use /sentinel/register first"
         )
 
-    payment_error = await _require_sentinel_subscription_payment(request)
-    if payment_error is not None:
-        return payment_error
-    payer_ref = request.state.payment_payer
+    # Step 1: Verify payment
+    verify_error, verify_response = await verify_x402_payment(request, 49.0)
+    if verify_error is not None:
+        return verify_error
 
+    # Step 2: Reject if payer is missing
+    payer_ref = verify_response.payer
+    if not payer_ref:
+        raise HTTPException(402, "Verified payment payer is unavailable")
+
+    # Step 3: Reject if stored owner_payer_ref is missing
     registered_payer = skill.get("owner_payer_ref")
     if not registered_payer:
         raise HTTPException(
@@ -629,9 +652,19 @@ async def sentinel_renew(request: Request, req: SentinelRenewRequest):
             "Legacy Sentinel registration has no verified owner payer; renewal is unavailable",
         )
 
+    # Step 4: Reject if payer mismatch (before settlement)
     if registered_payer.lower() != payer_ref.lower():
-        raise HTTPException(403, "Payment payer is not the registered skill owner")
+        raise HTTPException(
+            403,
+            "Payment payer does not match the registered skill owner; renewal rejected before settlement",
+        )
 
+    # Step 5: Settle payment
+    settle_error = await settle_x402_payment(request, 49.0, verify_response)
+    if settle_error is not None:
+        return settle_error
+
+    # Step 6: Renew subscription
     new_expires = _sentinel_db.renew_subscription(
         skill["id"],
         payer_ref,
@@ -647,7 +680,7 @@ async def sentinel_renew(request: Request, req: SentinelRenewRequest):
 
 
 # Utility Routes (no rate limits)
-# ════════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════[...]
 @app.get("/")
 def root():
     return {
