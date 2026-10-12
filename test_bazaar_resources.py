@@ -113,6 +113,24 @@ def test_payment_matcher_covers_concrete_paths_and_not_the_other_method():
     assert not _requires(server, "/health", "GET")
 
 
+def test_openapi_lists_paid_routes_and_not_public_200s():
+    schema = bz.app.openapi()
+    paths = schema["paths"]
+    assert "/health" not in paths
+    assert "/.well-known/x402" not in paths
+    assert "/.well-known/x402.json" not in paths
+    for path in ("/evaluate/secrets", "/evaluate/pii", "/evaluate/batch"):
+        assert "get" in paths[path]
+        assert "post" in paths[path]
+    fast_post = paths["/evaluate/fast"]["post"]["responses"]
+    assert next(iter(fast_post)) == "402"
+    assert next(iter(paths["/evaluate/fast"]["get"]["responses"])) == "402"
+    payment = paths["/evaluate/fast"]["post"]["x-payment-info"]
+    assert payment["protocols"] == ["x402"]
+    assert payment["price"] == {"mode": "fixed", "currency": "USD", "amount": "0.01"}
+    assert paths["/audit/{tx_hash}/deep"]["get"]["x-payment-info"]["price"]["amount"] == "0.50"
+
+
 def test_well_known_lists_all_ten_with_method_path_and_price():
     manifest = bz.x402_manifest()
     assert manifest["x402Version"] == 2
@@ -139,11 +157,17 @@ def test_existing_five_keep_evaluate_schemas_and_strict_policy():
         assert key in EXISTING
         assert bz.routes[key].description == description
         assert bz.routes[key].accepts.price == EXISTING[key]
-        assert _body_schema(key) == bz._EVALUATE_INPUT_SCHEMA
+
+        if path == "/evaluate/fast":
+            assert _body_schema(key) == bz._EVALUATE_FAST_INPUT_SCHEMA
+        else:
+            assert _body_schema(key) == bz._EVALUATE_INPUT_SCHEMA
+
         assert _output_schema(key)["properties"]["verdict"]["enum"] == ["COMMIT", "NO_COMMIT"]
         info = _extension(key)["info"]["input"]
         assert info["method"] == "POST"
         assert info["bodyType"] == "json"
+
     source = inspect.getsource(bz.evaluate_strict)
     assert '_process_evaluation(req, "default", "strict")' in source
     assert [path for path, *_rest in bz._EVALUATE_PATHS] == [
@@ -244,7 +268,12 @@ def test_fast_keeps_production_audit_event_and_payment_log(tmp_path, monkeypatch
 
     monkeypatch.setattr(bz, "log_payment", capture)
 
-    fast = asyncio.run(bz.evaluate_fast(bz.EvaluateRequest(response="hello from the agent")))
+    fast_digest = "a" * 64
+    fast = asyncio.run(bz.evaluate_fast(bz.EvaluateRequest(
+        response="hello from the agent",
+        task_type="http_side_effect",
+        request_digest=fast_digest,
+    )))
     strict = asyncio.run(bz.evaluate_strict(bz.EvaluateRequest(response="hello from the agent")))
 
     assert logged == ["/evaluate/fast", "/evaluate/strict"]

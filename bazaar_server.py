@@ -339,6 +339,40 @@ def _route_config(
     )
 
 
+def _discovery_probe_route_config(
+    path: str,
+    price: str,
+    description: str,
+    tags: list,
+) -> RouteConfig:
+    """Paid GET discovery probe for Bazaar validators; no JSON request body."""
+    extension = declare_discovery_extension(
+        input={},
+        input_schema={"properties": {}},
+        output=OutputConfig(
+            example=_EVALUATE_OUTPUT_EXAMPLE,
+            schema=_EVALUATE_OUTPUT_SCHEMA,
+        ),
+    )
+    extension["bazaar"]["info"]["input"]["method"] = "GET"
+
+    return RouteConfig(
+        accepts=PaymentOption(
+            scheme="exact",
+            pay_to=X402_WALLET,
+            price=price,
+            network=X402_NETWORK,
+            max_timeout_seconds=300,
+        ),
+        resource=f"{PUBLIC_BASE_URL}{path}",
+        description=description,
+        mime_type="application/json",
+        service_name="DCL Trust Oracle",
+        tags=tags,
+        extensions=extension,
+    )
+
+
 _EVALUATE_PATHS = [
     ("/evaluate/fast", "$0.01",
      "DCL Trust Oracle guardrail before a tool call. POST JSON {\"response\",\"agent_id\"}. "
@@ -701,9 +735,7 @@ for _path, _price, _desc, _tags in _EVALUATE_PATHS:
         routes[f"POST {_path}"] = _route_config(
             _path, _price, _desc, _tags, invoke_method="POST"
         )
-    routes[f"GET {_path}"] = _discovery_probe_route_config(
-        _path, _price, _desc, _tags
-    )
+     
 
 for _method, _path, _price, _desc, _tags, _extension in _EXTRA_ROUTES:
     routes[f"{_method} {_path}"] = _protected_route(
@@ -805,6 +837,7 @@ def x402_manifest():
 # ════════════════════════════════════════════════════════════════════════════════
 # Request / Response models (mirrors webhook_server.py)
 # ════════════════════════════════════════════════════════════════════════════════
+
 class EvaluateRequest(BaseModel):
     response: str = Field(
         min_length=1,
@@ -814,6 +847,8 @@ class EvaluateRequest(BaseModel):
         default="unknown",
         description="Caller id stored on the audit record. Omitted values are stored as unknown.",
     )
+    task_type: Optional[str] = "unknown"
+    request_digest: Optional[str] = None
 
 
 class ScanRequest(BaseModel):
