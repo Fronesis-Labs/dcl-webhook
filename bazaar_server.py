@@ -37,6 +37,7 @@ load_dotenv(override=True)
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
@@ -631,14 +632,62 @@ for _method, _path, _price, _desc, _tags, _extension in _EXTRA_ROUTES:
 app.add_middleware(PaymentMiddlewareASGI, routes=routes, server=server)
 
 
-@app.get("/.well-known/402index-verify.txt")
+def _probe_route_key(path: str) -> str | None:
+    """Paid catalog path, including the CORS preflight that would otherwise be 200."""
+    if path.startswith("/evaluate/"):
+        return f"POST {path}"
+    if path.startswith("/audit/") and path.endswith("/deep"):
+        return "GET /audit/:tx_hash/deep"
+    if path.startswith("/audit/"):
+        return "GET /audit/:tx_hash"
+    return None
+
+
+class _DiscoveryStatusMiddleware(BaseHTTPMiddleware):
+    """Unauthenticated probes of a paid path must be 402, including OPTIONS.
+
+    CORSMiddleware answers a cross-origin preflight with 200 before a client
+    ever sees the payment challenge. Bazaar validation records that 200.
+    """
+
+    async def dispatch(self, request, call_next):
+        path = request.url.path
+        if len(path) > 1:
+            path = path.rstrip("/")
+        route_key = _probe_route_key(path)
+        if route_key and request.method in {"OPTIONS", "HEAD"}:
+            header = await _payment_required_header(route_key, advertise_post=route_key.startswith("POST "))
+            return JSONResponse(
+                status_code=402,
+                content={},
+                headers={
+                    "PAYMENT-REQUIRED": header,
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET, POST, HEAD, OPTIONS",
+                    "Access-Control-Allow-Headers": "*",
+                    "Access-Control-Expose-Headers": "PAYMENT-REQUIRED",
+                    "Cache-Control": "no-store",
+                },
+            )
+        response = await call_next(request)
+        if route_key:
+            response.headers.setdefault("Access-Control-Allow-Origin", "*")
+            response.headers.setdefault("Access-Control-Expose-Headers", "PAYMENT-REQUIRED")
+        return response
+
+
+# Outermost: a preflight must not be turned into HTTP 200 before this runs.
+app.add_middleware(_DiscoveryStatusMiddleware)
+
+
+@app.get("/.well-known/402index-verify.txt", include_in_schema=False)
 def index_402_verify():
     from fastapi.responses import PlainTextResponse
     return PlainTextResponse(os.environ.get("INDEX_402_VERIFY_HASH", ""))
 
 
-@app.get("/.well-known/x402.json")
-@app.get("/.well-known/x402")
+@app.get("/.well-known/x402.json", include_in_schema=False)
+@app.get("/.well-known/x402", include_in_schema=False)
 def x402_manifest():
     """Facilitator-agnostic discovery manifest — crawled by x402scan and similar
     ecosystem-wide explorers, independent of any one facilitator/CDP account."""
@@ -993,20 +1042,21 @@ async def audit_decode(tx_hash: str):
     }
 
 
-async def _post_payment_required_header(path: str) -> str:
-    """402 header for a GET probe, advertising the POST JSON declaration."""
+async def _payment_required_header(route_key: str, advertise_post: bool = False) -> str:
+    """402 header for an unauthenticated probe of one catalog route."""
     import copy
 
     from x402.http.utils import encode_payment_required_header
     from x402.schemas import ResourceInfo
 
-    cfg = routes[f"POST {path}"]
+    cfg = routes[route_key]
     if not server._initialized:
         server.initialize()
     requirements = server.build_payment_requirements(cfg.accepts)
     extensions = copy.deepcopy(cfg.extensions) if cfg.extensions else None
-    if extensions and "bazaar" in extensions:
+    if advertise_post and extensions and "bazaar" in extensions:
         extensions["bazaar"]["info"]["input"]["method"] = "POST"
+    path = route_key.split(" ", 1)[1]
     resource = ResourceInfo(
         url=cfg.resource or f"{PUBLIC_BASE_URL}{path}",
         description=cfg.description or "",
@@ -1023,11 +1073,19 @@ async def _post_payment_required_header(path: str) -> str:
     return encode_payment_required_header(payment_required)
 
 
-@app.get("/evaluate/fast")
-@app.get("/evaluate/strict")
-@app.get("/evaluate/jailbreak")
-@app.get("/evaluate/safety")
-@app.get("/evaluate/quality")
+async def _post_payment_required_header(path: str) -> str:
+    """402 header for a GET probe, advertising the POST JSON declaration."""
+    return await _payment_required_header(f"POST {path}", advertise_post=True)
+
+
+@app.get("/evaluate/fast", status_code=402)
+@app.get("/evaluate/strict", status_code=402)
+@app.get("/evaluate/jailbreak", status_code=402)
+@app.get("/evaluate/safety", status_code=402)
+@app.get("/evaluate/quality", status_code=402)
+@app.get("/evaluate/secrets", status_code=402)
+@app.get("/evaluate/pii", status_code=402)
+@app.get("/evaluate/batch", status_code=402)
 async def evaluate_get_method_not_allowed(request: Request):
     return JSONResponse(
         status_code=402,
@@ -1039,9 +1097,60 @@ async def evaluate_get_method_not_allowed(request: Request):
     )
 
 
-@app.get("/health")
+@app.get("/health", include_in_schema=False)
 def health():
     return {"status": "ok", "service": "DCL Trust Oracle Bazaar (x402 v2)", "chain_length": len(_chain)}
+
+
+def _catalog_price(path: str) -> str | None:
+    """Decimal USD price for an OpenAPI path, taken from the live route table."""
+    if path.startswith("/evaluate/"):
+        cfg = routes.get(f"POST {path}")
+    elif path == "/audit/{tx_hash}/deep":
+        cfg = routes.get("GET /audit/:tx_hash/deep")
+    elif path == "/audit/{tx_hash}":
+        cfg = routes.get("GET /audit/:tx_hash")
+    else:
+        cfg = None
+    if cfg is None:
+        return None
+    return str(cfg.accepts.price).lstrip("$")
+
+
+def _openapi_with_payment_challenge():
+    """Document 402 on paid operations. FastAPI otherwise publishes only 200."""
+    if app.openapi_schema:
+        return app.openapi_schema
+    from fastapi.openapi.utils import get_openapi
+
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    for path, operations in schema.get("paths", {}).items():
+        if not (path.startswith("/evaluate/") or path.startswith("/audit/")):
+            continue
+        price = _catalog_price(path)
+        for operation in operations.values():
+            if not isinstance(operation, dict):
+                continue
+            responses = dict(operation.get("responses") or {})
+            responses["402"] = {
+                "description": "Payment required. Unauthenticated requests must return 402, not 200.",
+            }
+            operation["responses"] = {"402": responses.pop("402"), **responses}
+            if price is not None:
+                operation["x-payment-info"] = {
+                    "protocols": ["x402"],
+                    "price": {"mode": "fixed", "currency": "USD", "amount": price},
+                }
+    app.openapi_schema = schema
+    return schema
+
+
+app.openapi = _openapi_with_payment_challenge
 
 
 if __name__ == "__main__":
