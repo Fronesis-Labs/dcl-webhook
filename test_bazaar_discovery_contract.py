@@ -111,10 +111,14 @@ def test_other_post_routes_keep_their_previous_input_example():
 
 
 def test_get_probe_does_not_publish_the_post_body():
-    info = _extension("GET /evaluate/fast")["info"]
-    body = info["input"].get("body")
-    assert body in (None, {})
-    assert "request_digest" not in info["output"]["example"]
+    route = next(
+        route for route in bazaar.app.routes
+        if getattr(route, "path", None) == "/evaluate/fast"
+        and "GET" in getattr(route, "methods", set())
+    )
+    assert route.status_code == 402
+    assert "POST /evaluate/fast" in bazaar.routes
+    assert "GET /evaluate/fast" not in bazaar.routes
 
 
 def test_valid_fast_request_returns_the_original_digest():
