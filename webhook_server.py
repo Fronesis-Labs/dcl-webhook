@@ -390,9 +390,14 @@ async def audit_decode_deep(request: Request, tx_hash: str):
 # ═════════════════════════════════════════════════════════════════[...]
 # DCL Update Sentinel (subscription + pay-per-call monitoring)
 
+# x402 amounts are strings (sentinel_x402 parses a leading "$"). A float here
+# raises AttributeError in _build_payment_requirements and the route returns 500.
+SENTINEL_SUBSCRIPTION_PRICE = "$49"
+
+
 async def _require_sentinel_subscription_payment(request: Request):
     """Verify Sentinel's $49 subscription payment and expose verified payer."""
-    payment_error = await require_x402_payment(request, 49.0)
+    payment_error = await require_x402_payment(request, SENTINEL_SUBSCRIPTION_PRICE)
     if payment_error is not None:
         return payment_error
     payer = getattr(request.state, "payment_payer", None)
@@ -635,7 +640,7 @@ async def sentinel_renew(request: Request, req: SentinelRenewRequest):
         )
 
     # Step 1: Verify payment
-    verify_error, verify_response = await verify_x402_payment(request, 49.0)
+    verify_error, verify_response = await verify_x402_payment(request, SENTINEL_SUBSCRIPTION_PRICE)
     if verify_error is not None:
         return verify_error
 
@@ -660,7 +665,7 @@ async def sentinel_renew(request: Request, req: SentinelRenewRequest):
         )
 
     # Step 5: Settle payment
-    settle_error = await settle_x402_payment(request, 49.0, verify_response)
+    settle_error = await settle_x402_payment(request, SENTINEL_SUBSCRIPTION_PRICE, verify_response)
     if settle_error is not None:
         return settle_error
 
