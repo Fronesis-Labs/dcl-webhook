@@ -54,19 +54,25 @@ def _build_payment_requirements(request: Request, amount: str) -> PaymentRequire
     )
 
 
-async def require_x402_payment(request: Request, amount: str) -> Optional[JSONResponse]:
-    """Return a 402 JSONResponse if payment is missing/invalid; None if verified."""
+async def verify_x402_payment(request: Request, amount: str) -> tuple[Optional[JSONResponse], Optional]:
+    """
+    Verify x402 payment without settling.
+    
+    Returns (error_response, verify_response).
+    On success: error_response is None, verify_response has .payer and .payment_id.
+    On failure: error_response is a JSONResponse (402), verify_response is None.
+    """
     payment_header = request.headers.get("X-PAYMENT")
     if not payment_header:
         requirements = _build_payment_requirements(request, amount)
-        return JSONResponse(
+        return (JSONResponse(
             status_code=402,
             content={
                 "x402Version": 1,
                 "error": "X-PAYMENT header is required",
                 "accepts": [requirements.model_dump()],
             },
-        )
+        ), None)
 
     facilitator = get_facilitator_client()
     requirements = _build_payment_requirements(request, amount)
@@ -75,29 +81,77 @@ async def require_x402_payment(request: Request, amount: str) -> Optional[JSONRe
         payment_requirements=requirements,
     )
     if not verify_response.isValid:
-        return JSONResponse(
+        return (JSONResponse(
             status_code=402,
             content={
                 "x402Version": 1,
                 "error": verify_response.error or "Payment verification failed",
                 "accepts": [requirements.model_dump()],
             },
+        ), None)
+
+    return (None, verify_response)
+
+
+async def settle_x402_payment(
+    request: Request,
+    amount: str,
+    verify_response,
+) -> Optional[JSONResponse]:
+    """
+    Settle an x402 payment.
+    
+    Only attempts settlement if verify_response.payment_id is truthy.
+    Returns error response (402) on settlement failure, None on success or skip.
+    """
+    if not verify_response.payment_id:
+        return None
+
+    payment_header = request.headers.get("X-PAYMENT")
+    if not payment_header:
+        return JSONResponse(
+            status_code=402,
+            content={
+                "x402Version": 1,
+                "error": "X-PAYMENT header is required",
+                "accepts": [],
+            },
         )
 
-    if verify_response.payment_id:
-        settle = await facilitator.settle_payment(
-            payment_header=payment_header,
-            payment_requirements=requirements,
+    facilitator = get_facilitator_client()
+    requirements = _build_payment_requirements(request, amount)
+    settle = await facilitator.settle_payment(
+        payment_header=payment_header,
+        payment_requirements=requirements,
+    )
+    if not settle.success:
+        return JSONResponse(
+            status_code=402,
+            content={
+                "x402Version": 1,
+                "error": settle.errorReason or "Payment settlement failed",
+                "accepts": [requirements.model_dump()],
+            },
         )
-        if not settle.success:
-            return JSONResponse(
-                status_code=402,
-                content={
-                    "x402Version": 1,
-                    "error": settle.errorReason or "Payment settlement failed",
-                    "accepts": [requirements.model_dump()],
-                },
-            )
+    return None
+
+
+async def require_x402_payment(request: Request, amount: str) -> Optional[JSONResponse]:
+    """
+    Verify and settle x402 payment (combined for backward compatibility).
+    
+    Returns None if verified and settled (or no settlement needed).
+    Returns JSONResponse (402) on verification or settlement failure.
+    Sets request.state.payment_verified and request.state.payment_payer on success.
+    """
+    verify_error, verify_response = await verify_x402_payment(request, amount)
+    if verify_error is not None:
+        return verify_error
+
+    # Always expose payer after successful verification
     request.state.payment_verified = True
     request.state.payment_payer = verify_response.payer
-    return None
+
+    # Conditionally settle
+    settle_error = await settle_x402_payment(request, amount, verify_response)
+    return settle_error
