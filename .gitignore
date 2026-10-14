@@ -8,4 +8,7 @@ venv/
 dcl_chain.db
 dcl_chain.db-shm
 dcl_chain.db-wal
-__pycache__/
+.pytest_cache/
+.pytest-tmp*/
+dcl_chain_bazaar.db
+payment_log.sql
