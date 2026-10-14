@@ -1,3 +1,4 @@
+pip requirements
 mcp==1.28.1
 pyyaml>=6.0.1
 fastapi>=0.100.0
@@ -11,3 +12,4 @@ fastapi-x402>=0.1.8
 slowapi>=0.1.9
 paymcp @ git+https://github.com/Fronesis-Labs/paymcp.git@291c797
 dcl-core @ git+https://github.com/Fronesis-Labs/dcl-core.git@v0.1.1
+langchain-core>=0.3.19
