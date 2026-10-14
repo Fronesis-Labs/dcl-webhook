@@ -177,7 +177,7 @@ class SentinelWebhookFlowTests(unittest.TestCase):
     def test_non_regression_promotes_last_known_good(self, mock_audit):
         mock_audit.return_value = _make_outcome("2.4.1", "PASS", 0.91)
         resp = self._signed_post(
-            {"action": "published", "release": {"tag_name": "2.4.1"}},
+            {"action": "published", "release": {"tag_name": "2.4.1"}, "repository": {"full_name": "acme/skill"}},
         )
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
@@ -192,7 +192,7 @@ class SentinelWebhookFlowTests(unittest.TestCase):
     def test_regression_blocks_without_changing_baseline(self, mock_audit):
         mock_audit.return_value = _make_outcome("2.4.1", "PASS", 0.71)
         resp = self._signed_post(
-            {"action": "published", "release": {"tag_name": "2.4.1"}},
+            {"action": "published", "release": {"tag_name": "2.4.1"}, "repository": {"full_name": "acme/skill"}},
         )
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
