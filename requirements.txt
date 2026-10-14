@@ -12,3 +12,4 @@ slowapi>=0.1.9
 paymcp @ git+https://github.com/Fronesis-Labs/paymcp.git@291c797
 dcl-core @ git+https://github.com/Fronesis-Labs/dcl-core.git@v0.1.1
 langchain-core>=0.3.19
+pytest-asyncio>=0.23.0
